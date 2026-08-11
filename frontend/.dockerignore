@@ -1,0 +1,35 @@
+# Docker 构建忽略文件：以下文件/目录不会被复制到镜像中
+# 目的：减小镜像体积 + 避免敏感信息（.env）泄露到镜像层
+
+# 环境变量文件（含真实配置，构建时通过 ARG 注入）
+.env
+.env.*
+!.env.example
+
+# 依赖目录（构建时由 npm ci 重新安装，不复制本地 node_modules）
+node_modules/
+
+# 构建产物（构建时由 npm run build 重新生成，不复制本地 dist）
+dist/
+
+# 测试与缓存
+coverage/
+.nyc_output/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker 自身文件
+Dockerfile
+.dockerignore
+
+# Git
+.git/
+.gitignore
+
+# 日志
+*.log
+npm-debug.log*

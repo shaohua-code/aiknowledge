@@ -1,0 +1,349 @@
+# =============================================================================
+# 智能知识中台 - 生产部署编排文件
+# 对应 Task 24.1：完整生产环境部署
+#
+# 与 docker-compose.yml 的区别：
+#   - docker-compose.yml 仅用于本地开发，只含 postgres + redis 并暴露端口
+#   - 本文件为生产部署，包含全部服务，端口不对外暴露（仅 nginx 对外）
+#
+# 启动方式：
+#   1. 准备配置文件：cp backend/.env.example backend/.env（填入真实密钥）
+#   2. 准备部署配置：cp docker/.env.example docker/.env（填入数据库密码等）
+#   3. 启动全部服务：docker compose -f docker-compose.prod.yml up -d
+#   4. 查看日志：docker compose -f docker-compose.prod.yml logs -f api-1
+#   5. 停止服务：docker compose -f docker-compose.prod.yml down
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 自定义网络：所有服务接入同一网络，通过服务名互相访问
+# 为什么用自定义网络而非默认网络？
+#   自定义网络提供 DNS 服务发现，容器间可通过服务名（如 postgres、redis）访问，
+#   无需关心容器 IP 变化。同时隔离生产环境与本地开发网络。
+# ---------------------------------------------------------------------------
+networks:
+  aiknowledge-prod:
+    driver: bridge
+    name: aiknowledge-prod
+
+# ---------------------------------------------------------------------------
+# 命名卷：持久化数据，容器删除后数据仍保留
+# 为什么用命名卷而非绑定挂载？
+#   命名卷由 Docker 管理，权限正确，跨平台兼容，且支持卷备份/迁移。
+#   绑定挂载依赖宿主机目录结构与权限，生产环境易出问题。
+# ---------------------------------------------------------------------------
+volumes:
+  # PostgreSQL 数据持久化
+  pgdata_prod:
+    name: aiknowledge-pgdata-prod
+  # Redis 持久化数据
+  redisdata_prod:
+    name: aiknowledge-redisdata-prod
+  # 本地对象存储（文档/图片等）
+  storage_prod:
+    name: aiknowledge-storage-prod
+
+services:
+  # ===========================================================================
+  # 数据库：PostgreSQL 16 + pgvector 向量扩展
+  # ===========================================================================
+  # 生产环境不暴露端口（注释掉 ports），仅内部网络可访问
+  # 防止数据库直接暴露在公网，所有访问通过 API 服务经内部网络进行
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aiknowledge-postgres-prod
+    restart: unless-stopped
+    # 环境变量从 docker/.env 读取（部署时填入真实密码）
+    env_file:
+      - ./docker/.env
+    environment:
+      # 显式声明（env_file 中的变量会被这里覆盖，确保格式正确）
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # 注意：生产环境不暴露端口，仅内部网络访问
+    # ports:
+    #   - "5433:5432"
+    volumes:
+      # 数据持久化到命名卷
+      - pgdata_prod:/var/lib/postgresql/data
+      # 初始化 SQL（首次启动时执行，创建扩展）
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - aiknowledge-prod
+    healthcheck:
+      # pg_isready 检查数据库是否就绪
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # 缓存与消息队列：Redis 7
+  # ===========================================================================
+  # 用途：1) 项目级限流存储 2) Celery Broker 3) Celery Result Backend
+  # 生产环境不暴露端口，开启 appendonly 持久化
+  redis:
+    image: redis:7-alpine
+    container_name: aiknowledge-redis-prod
+    restart: unless-stopped
+    # 启用 appendonly 持久化：每秒 fsync，崩溃时最多丢 1 秒数据
+    # 可选：通过 requirepass 设置密码（在 command 中追加 --requirepass yourpassword）
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    env_file:
+      - ./docker/.env
+    # 注意：生产环境不暴露端口
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redisdata_prod:/data
+    networks:
+      - aiknowledge-prod
+    healthcheck:
+      # 若设置了密码，redis-cli ping 需加 -a 参数
+      test: ['CMD-SHELL', 'redis-cli ${REDIS_PASSWORD:+-a ${REDIS_PASSWORD}} ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # 后端 API 服务 1：FastAPI（副本 1）
+  # ===========================================================================
+  # 生产部署 2 个副本实现高可用与负载均衡
+  # 健康检查通过 /health 接口
+  api-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-api-1-prod
+    restart: unless-stopped
+    # 环境变量从 backend/.env 读取（部署时填入真实密钥）
+    env_file:
+      - ./backend/.env
+    environment:
+      # 覆盖 DATABASE_URL 等：容器内通过服务名访问 postgres/redis
+      # 注意：backend/.env 中默认是 localhost，生产环境需覆盖为容器服务名
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      # 生产环境标志
+      APP_ENV: production
+    volumes:
+      # 本地对象存储持久化（OBJECT_STORAGE_PROVIDER=local 时使用）
+      - storage_prod:/app/storage
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--max-time', '5', 'http://localhost:8000/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # 后端 API 服务 2：FastAPI（副本 2）
+  # ===========================================================================
+  # 与 api-1 配置一致，仅容器名不同，由 nginx 负载均衡
+  api-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-api-2-prod
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      APP_ENV: production
+    volumes:
+      - storage_prod:/app/storage
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--max-time', '5', 'http://localhost:8000/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # Celery Worker：文档入库队列（ingestion）
+  # ===========================================================================
+  # 仅消费 ingestion 队列：文档解析/分块/向量化等 CPU/IO 密集任务
+  # 通过 -Q ingestion 指定消费队列，避免抢占 online 队列资源
+  worker-ingestion:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-worker-ingestion-prod
+    restart: unless-stopped
+    # 覆盖默认 CMD，启动 celery worker
+    # 参数说明：
+    #   -A app.workers.celery_app —— 指定 Celery 应用模块
+    #   worker —— 启动 Worker 进程
+    #   -Q ingestion —— 仅消费 ingestion 队列
+    #   --concurrency=2 —— 2 个并发进程（CPU 密集任务不宜过多）
+    #   --loglevel=info —— 日志级别
+    command: celery -A app.workers.celery_app worker -Q ingestion --concurrency=2 --loglevel=info
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      APP_ENV: production
+    volumes:
+      - storage_prod:/app/storage
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Celery Worker：爬虫队列（crawler）
+  # ===========================================================================
+  # 仅消费 crawler 队列：网页采集任务，长耗时、可容忍失败重试
+  worker-crawler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-worker-crawler-prod
+    restart: unless-stopped
+    # --concurrency=4：爬虫任务多为 IO 等待（网络请求），可开更高并发
+    command: celery -A app.workers.celery_app worker -Q crawler --concurrency=4 --loglevel=info
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      APP_ENV: production
+    volumes:
+      - storage_prod:/app/storage
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Celery Worker：在线研究队列（online）
+  # ===========================================================================
+  # 仅消费 online 队列：在线研究/检索任务，用户同步等待，延迟敏感
+  # --concurrency=1 + prefetch=1：避免长任务阻塞，保证响应速度
+  worker-online:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-worker-online-prod
+    restart: unless-stopped
+    # --concurrency=1：在线任务优先级最高，单进程保证不被其他任务抢占
+    command: celery -A app.workers.celery_app worker -Q online --concurrency=1 --loglevel=info
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      APP_ENV: production
+    volumes:
+      - storage_prod:/app/storage
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Celery Beat：定时任务调度器
+  # ===========================================================================
+  # ⚠️ 重要：Beat 只能有一个实例运行
+  # 多个 Beat 实例会重复触发任务，导致任务被重复投递
+  # 部署时通过 replicas=1（compose 默认）保证单实例
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-beat-prod
+    restart: unless-stopped
+    # 启动 celery beat 调度器
+    # --loglevel=info —— info 级别日志，可观察任务触发
+    # beat 进程负责按 beat_schedule 中的 crontab 规则定期投递任务到队列
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/0
+      CELERY_BROKER_URL: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/1
+      CELERY_RESULT_BACKEND: ${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}${REDIS_PASSWORD:-redis://}redis:6379/2
+      APP_ENV: production
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Nginx 反向代理：统一入口
+  # ===========================================================================
+  # 对外暴露 80/443 端口，负载均衡 api-1 + api-2，托管前端静态文件
+  nginx:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aiknowledge-nginx-prod
+    restart: unless-stopped
+    # 唯一对外暴露端口
+    ports:
+      - "80:80"
+      # 生产环境启用 HTTPS 时取消注释：
+      # - "443:443"
+    volumes:
+      # 挂载自定义 nginx 配置（覆盖镜像内默认配置）
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # 前端构建产物已在 Dockerfile 中复制到镜像，无需额外挂载
+      # 若需不重新构建镜像即可更新前端，可改为挂载宿主机 dist 目录：
+      # - ./frontend/dist:/usr/share/nginx/html:ro
+      # 生产环境 HTTPS 证书挂载：
+      # - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - aiknowledge-prod
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost/health']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
