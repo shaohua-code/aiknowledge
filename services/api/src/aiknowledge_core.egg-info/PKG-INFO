@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: aiknowledge-core
+Version: 2.0.0
+Summary: AI Knowledge Core control plane and runtime
+Requires-Python: >=3.12
+Requires-Dist: fastapi<1,>=0.116
+Requires-Dist: uvicorn[standard]<1,>=0.35
+Requires-Dist: pydantic<3,>=2.11
+Requires-Dist: pydantic-settings<3,>=2.10
+Requires-Dist: SQLAlchemy[asyncio]<3,>=2.0.41
+Requires-Dist: asyncpg<1,>=0.30
+Requires-Dist: alembic<2,>=1.16
+Requires-Dist: pgvector<1,>=0.4
+Requires-Dist: redis<7,>=6
+Requires-Dist: celery<6,>=5.5
+Requires-Dist: argon2-cffi<26,>=25
+Requires-Dist: itsdangerous<3,>=2.2
+Requires-Dist: httpx<1,>=0.28
+Requires-Dist: python-multipart<1,>=0.0.20
+Requires-Dist: orjson<4,>=3.10
+Requires-Dist: structlog<26,>=25
+Requires-Dist: PyMuPDF<2,>=1.26
+Requires-Dist: python-docx<2,>=1.2
+Requires-Dist: jsonschema<5,>=4.25
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8.4; extra == "dev"
+Requires-Dist: pytest-asyncio<2,>=1.1; extra == "dev"
+Requires-Dist: pytest-cov<7,>=6.2; extra == "dev"
+Requires-Dist: ruff<1,>=0.12; extra == "dev"
+Requires-Dist: mypy<2,>=1.17; extra == "dev"

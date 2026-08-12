@@ -1,0 +1,12 @@
+{
+  "name": "aiknowledge",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "dev": "pnpm --filter @aik/console dev",
+    "build": "pnpm --filter @aik/contracts typecheck && pnpm --filter @aik/ui typecheck && pnpm --filter @aik/console build",
+    "contracts:export": "services/api/.venv/Scripts/python.exe scripts/export_openapi.py",
+    "lint": "pnpm --filter @aik/console lint",
+    "test": "pnpm --filter @aik/console test"
+  }
+}

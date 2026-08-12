@@ -1,62 +1,92 @@
-# 智能知识中台 - 开发环境依赖服务
-# 用法：docker-compose up -d  （启动 PostgreSQL + Redis）
-#       docker-compose down    （停止）
-#       docker-compose logs -f （查看日志）
-version: '3.8'
+name: aiknowledge-v2
 
 services:
-  # PostgreSQL 16 + pgvector 扩展（官方镜像已内置 vector 扩展）
   postgres:
-    # pgvector 官方维护的镜像，基于 postgres:16，已预装 vector 扩展文件
     image: pgvector/pgvector:pg16
-    container_name: aiknowledge-postgres
-    restart: unless-stopped
     environment:
-      # 超级管理员密码（与项目 .env 配置一致）
-      POSTGRES_PASSWORD: sss980318..
-      # 启动时自动创建的库（业务库）
-      POSTGRES_DB: knowledge_hub
-      # 业务用户（后端用此用户连接，权限受限更安全）
-      POSTGRES_USER: aiknowledge
-      # 字符集与排序规则，中文检索需要 UTF-8
-      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     ports:
-      # 主机 5433 → 容器 5432，与 .env 中 DATABASE_URL 端口一致
-      # 注意：会占用主机 5433 端口，需先停掉本地 PostgreSQL 服务
       - "5433:5432"
     volumes:
-      # 数据持久化：容器删除后数据保留在 named volume 中
-      - pgdata:/var/lib/postgresql/data
-      # 启动时自动执行初始化 SQL（安装扩展、授权）
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - aik-postgres:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
-      # 健康检查：每 10 秒用 pg_isready 探活
-      test: ["CMD-SHELL", "pg_isready -U aiknowledge -d knowledge_hub"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # Redis 7：用于限流、幂等存储、Celery broker/backend
   redis:
     image: redis:7-alpine
-    container_name: aiknowledge-redis
-    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      # 主机 6379 → 容器 6379，与 .env 中 REDIS_URL 一致
       - "6379:6379"
     volumes:
-      # Redis 数据持久化（虽然限流/幂等数据可丢失，但重启不丢更友好）
-      - redisdata:/data
-    command: ["redis-server", "--appendonly", "yes"]
+      - aik-redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
 
-# 命名卷：由 Docker 管理，容器删除后仍保留
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    ports:
+      - "8000:8000"
+    command: >-
+      sh -c "alembic upgrade head &&
+      exec uvicorn knowledge_core.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - aik-storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    command: celery -A knowledge_core.workers.celery_app worker -Q ingestion,maintenance --loglevel=info
+    volumes:
+      - aik-storage:/data/storage
+    depends_on:
+      api:
+        condition: service_healthy
+
+  console:
+    build:
+      context: .
+      dockerfile: apps/console/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
-  pgdata:
-    name: aiknowledge_pgdata
-  redisdata:
-    name: aiknowledge_redisdata
+  aik-postgres:
+  aik-redis:
+  aik-storage:
