@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from kombu.exceptions import OperationalError
 
 from knowledge_core.config import settings
-from knowledge_core.main import app
+from knowledge_core.main import _check_worker, app
 
 
 def test_openapi_contains_control_and_runtime_contracts() -> None:
@@ -47,3 +48,16 @@ def test_validation_error_uses_standard_envelope() -> None:
     assert payload["success"] is False
     assert payload["requestId"]
     assert payload["error"]["code"] == "VALIDATION_ERROR"
+
+
+async def test_worker_health_check_degrades_when_broker_is_offline(monkeypatch) -> None:
+    class OfflineInspector:
+        def ping(self) -> None:
+            raise OperationalError("Redis offline")
+
+    monkeypatch.setattr(
+        "knowledge_core.main.celery_app.control.inspect",
+        lambda timeout: OfflineInspector(),
+    )
+
+    assert await _check_worker() is False

@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 
-from celery.exceptions import CeleryError
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -115,7 +114,10 @@ async def _check_worker() -> bool:
         try:
             replies = celery_app.control.inspect(timeout=1).ping() or {}
             return bool(replies)
-        except (CeleryError, OSError):
+        # Worker 检查会经过 Celery -> Kombu -> Redis，不同连接阶段可能抛出
+        # CeleryError、Kombu OperationalError 或底层 socket 异常。健康检查
+        # 只能报告降级，不能因为诊断依赖不可用而让 /ready 自身返回 500。
+        except Exception:  # noqa: BLE001
             return False
 
     return await asyncio.to_thread(ping)
