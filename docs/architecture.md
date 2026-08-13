@@ -1,6 +1,6 @@
-# AI 知识能力底座 V2 架构
+# AI 知识能力底座架构
 
-本文件描述当前 V2 实现。产品范围与验收标准以 [PRD](./PRD.md) 为唯一业务基线。
+本文件描述当前项目实现。产品范围与验收标准以 [PRD](./PRD.md) 为唯一业务基线。
 
 ## 1. 总体结构
 
@@ -29,13 +29,16 @@ flowchart LR
 
 | 路径 | 职责 |
 | --- | --- |
-| `apps/console` | 管理控制台、错误展示、Playground、运行中心 |
-| `services/api` | 控制面、运行面、领域服务、Provider、数据库迁移 |
-| `services/worker` | Celery Worker 镜像入口 |
-| `packages/contracts` | TypeScript 契约和 OpenAPI 快照 |
-| `packages/ui` | 共享页面状态和视觉组件 |
-| `infrastructure` | PostgreSQL 初始化、Nginx 和容器配置 |
-| `scripts` | OpenAPI 导出、V1 审计与迁移工具 |
+| `frontend/apps/console` | 管理控制台、错误展示、Playground、运行中心 |
+| `frontend/packages/contracts` | TypeScript 契约和 OpenAPI 快照 |
+| `frontend/packages/ui` | 共享页面状态和视觉组件 |
+| `frontend/infrastructure/nginx` | 前端静态资源与 API 反向代理配置 |
+| `backend/services/api` | 控制面、运行面、领域服务、Provider、数据库迁移 |
+| `backend/services/worker` | Celery Worker 镜像入口 |
+| `backend/infrastructure/postgres` | PostgreSQL 初始化配置 |
+| `backend/scripts` | OpenAPI 契约导出工具 |
+
+项目目录与能力边界见 [项目梳理](./项目梳理.md)。
 
 ## 3. 隔离模型
 
@@ -54,7 +57,7 @@ flowchart LR
 
 ## 5. 知识入库
 
-文件、文本、公开网页和公开 JSON API 最终进入同一流水线：
+文件、文本、公开网页、JSON API、RSS/Atom、XML 和 CSV 最终进入同一流水线。远程数据由 Worker 异步抓取，创建任务不会被慢网站阻塞：
 
 ```mermaid
 flowchart LR
@@ -67,7 +70,7 @@ flowchart LR
   Index --> Publish["原子发布版本"]
 ```
 
-新版本发布成功前，文档的 `current_version` 仍指向旧版本。失败任务记录阶段、错误码、错误说明、请求 ID和重试次数，可从安全入口重新排队。网页和 API 地址拒绝内网、回环、保留地址、URL 凭证和重定向。
+新版本发布成功前，文档的 `current_version` 仍指向旧版本。失败任务记录阶段、稳定错误码、中文错误说明、处理建议、请求 ID 和重试次数，可从安全入口重新排队。远程地址拒绝内网、回环、保留地址、URL 凭证与敏感参数；允许最多 5 次安全重定向，但每一跳都会重新检查目标地址，并拒绝 HTTPS 降级到 HTTP。
 
 ## 6. 检索与回答
 

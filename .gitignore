@@ -8,6 +8,7 @@
 # Python 虚拟环境、字节码与测试缓存
 **/.venv/
 **/venv/
+**/*.egg-info/
 **/__pycache__/
 *.py[cod]
 **/.pytest_cache/

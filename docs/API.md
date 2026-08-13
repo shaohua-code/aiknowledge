@@ -1,6 +1,14 @@
-# V2 API 接入说明
+# API 接入说明
 
-完整机器契约见 `packages/contracts/openapi.json`，可通过 `pnpm contracts:export` 重新生成。
+完整机器契约见 `frontend/packages/contracts/openapi.json`，可在 `frontend` 目录执行 `pnpm contracts:export` 重新生成。
+
+平台模型配置使用管理员会话访问：
+
+- `GET /control/v1/platform/model-configuration`：读取 Provider、模型和密钥配置状态。
+- `PUT /control/v1/platform/model-configuration`：更新模型配置；API Key 留空会保留已有值。
+- `POST /control/v1/platform/model-configuration/test`：实际调用一次对话模型检查连接。
+
+响应只返回 `chatApiKeyConfigured` 等布尔状态，不返回 API Key 明文。
 
 ## 1. 两类 API
 

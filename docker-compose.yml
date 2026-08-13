@@ -11,7 +11,7 @@ services:
       - "5433:5432"
     volumes:
       - aik-postgres:/var/lib/postgresql/data
-      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ./backend/infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -33,7 +33,7 @@ services:
 
   api:
     build:
-      context: .
+      context: ./backend
       dockerfile: services/api/Dockerfile
     env_file: .env
     environment:
@@ -61,7 +61,7 @@ services:
 
   worker:
     build:
-      context: .
+      context: ./backend
       dockerfile: services/worker/Dockerfile
     env_file: .env
     environment:
@@ -78,7 +78,7 @@ services:
 
   console:
     build:
-      context: .
+      context: ./frontend
       dockerfile: apps/console/Dockerfile
     ports:
       - "5173:80"
