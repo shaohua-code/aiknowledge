@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     remote_fetch_max_redirects: int = 5
     remote_fetch_retries: int = 2
     remote_fetch_user_agent: str = "AIKnowledgeBot/2.1 (+public-knowledge-ingestion)"
+    # 仅非生产环境生效：为 true 时允许远程抓取 localhost/内网地址，便于本地联调。
+    remote_allow_private_addresses: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -120,6 +122,9 @@ class Settings(BaseSettings):
             raise ValueError("WEB_SEARCH_PROVIDER 仅支持 disabled 或 serper")
         if self.web_search_provider == "serper" and not self.web_search_api_key:
             raise ValueError("启用 Serper 时必须配置 WEB_SEARCH_API_KEY")
+        # 生产环境禁止放开内网抓取，避免 SSRF 风险。
+        if self.remote_allow_private_addresses:
+            raise ValueError("生产环境禁止启用 REMOTE_ALLOW_PRIVATE_ADDRESSES")
         return self
 
 

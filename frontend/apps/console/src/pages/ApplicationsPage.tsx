@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App, Button, Form, Input, Modal, Select } from 'antd'
+import { App, Button, Form, Input, Modal, Select } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
@@ -36,7 +36,8 @@ export default function ApplicationsPage() {
       await queryClient.invalidateQueries({ queryKey: ['applications'] })
       closeCreate()
       message.success('AI 应用空间已创建')
-    }
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
 
   if (applications.isLoading) return <LoadingState rows={7} />
@@ -52,7 +53,6 @@ export default function ApplicationsPage() {
     )
   }
   const rows = applications.data ?? []
-  const createError = create.error ? asPlatformError(create.error) : null
 
   return (
     <div className="page-container">
@@ -135,14 +135,6 @@ export default function ApplicationsPage() {
           <span><LineIcon name="layers" size={18} /></span>
           <p><strong>应用就是一条独立知识边界</strong><small>创建后自动生成开发、测试和生产三个隔离环境。</small></p>
         </div>
-        {createError && (
-          <Alert
-            type="error"
-            showIcon
-            message={createError.title}
-            description={`${createError.message}${createError.requestId ? ` · ${createError.requestId}` : ''}`}
-          />
-        )}
         <Form
           form={form}
           layout="vertical"

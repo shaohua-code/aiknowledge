@@ -79,6 +79,7 @@ export default function ConsoleShell() {
               工作台
             </NavLink>
             <NavLink to="/applications">AI 应用</NavLink>
+            <NavLink to="/guide">操作指南</NavLink>
           </nav>
           <Space size="small" className="console-actions">
           <Dropdown
@@ -110,7 +111,8 @@ export default function ConsoleShell() {
             menu={{
               items: [
                 { key: 'home', label: <Link to="/">工作台</Link> },
-                { key: 'applications', label: <Link to="/applications">AI 应用</Link> }
+                { key: 'applications', label: <Link to="/applications">AI 应用</Link> },
+                { key: 'guide', label: <Link to="/guide">操作指南</Link> }
               ]
             }}
           >

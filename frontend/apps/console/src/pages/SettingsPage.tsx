@@ -1,5 +1,6 @@
+import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, Button, Descriptions, Divider, Form, Input, Select, Space, Spin, Tag } from 'antd'
+import { App, Button, Descriptions, Divider, Form, Input, Select, Space, Spin, Tag } from 'antd'
 import type { ModelConfigurationUpdate } from '@aik/contracts'
 import { PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
@@ -7,22 +8,41 @@ import { applicationApi, modelConfigurationApi } from '@/api/platform'
 import { useApplicationContext } from '@/hooks/useApplicationContext'
 
 export default function SettingsPage() {
+  const { message } = App.useApp()
   const queryClient = useQueryClient()
   const { application, environment } = useApplicationContext()
   const modelConfiguration = useQuery({
     queryKey: ['model-configuration'],
     queryFn: modelConfigurationApi.get
   })
+  // 模型配置加载失败时全局提示
+  useEffect(() => {
+    if (modelConfiguration.error) {
+      message.error(asPlatformError(modelConfiguration.error).message)
+    }
+  }, [modelConfiguration.error, message])
   const update = useMutation({
     mutationFn: (values: { name: string; description?: string }) =>
       applicationApi.update(application!.id, values),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['applications'] })
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['applications'] })
+      message.success('应用信息已保存')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
   const updateModel = useMutation({
     mutationFn: modelConfigurationApi.update,
-    onSuccess: (data) => queryClient.setQueryData(['model-configuration'], data)
+    onSuccess: (data) => {
+      queryClient.setQueryData(['model-configuration'], data)
+      message.success('模型配置已保存并生效')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
-  const testModel = useMutation({ mutationFn: modelConfigurationApi.test })
+  const testModel = useMutation({
+    mutationFn: modelConfigurationApi.test,
+    onSuccess: () => message.success('对话模型连接成功'),
+    onError: (error) => message.error(asPlatformError(error).message)
+  })
   if (!application || !environment) return null
 
   return (
@@ -35,8 +55,6 @@ export default function SettingsPage() {
       <section className="settings-grid">
         <article className="panel-card">
           <h2>基本信息</h2>
-          {update.isSuccess && <Alert type="success" showIcon message="应用信息已保存" />}
-          {update.error && <Alert type="error" showIcon message={asPlatformError(update.error).message} />}
           <Form
             layout="vertical"
             initialValues={{ name: application.name, description: application.description }}
@@ -68,17 +86,6 @@ export default function SettingsPage() {
             配置平台统一使用的对话模型、向量模型和联网搜索。密钥保存后不会在页面回显。
           </p>
           {modelConfiguration.isLoading && <Spin />}
-          {modelConfiguration.error && (
-            <Alert type="error" showIcon message={asPlatformError(modelConfiguration.error).message} />
-          )}
-          {updateModel.isSuccess && <Alert type="success" showIcon message="模型配置已保存并生效" />}
-          {updateModel.error && (
-            <Alert type="error" showIcon message={asPlatformError(updateModel.error).message} />
-          )}
-          {testModel.isSuccess && <Alert type="success" showIcon message="对话模型连接成功" />}
-          {testModel.error && (
-            <Alert type="error" showIcon message={asPlatformError(testModel.error).message} />
-          )}
           {modelConfiguration.data && (
             <Form<ModelConfigurationUpdate>
               layout="vertical"

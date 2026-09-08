@@ -23,6 +23,10 @@ export const router = createBrowserRouter(
           lazy: async () => ({ Component: (await import('@/pages/ApplicationsPage')).default })
         },
         {
+          path: 'guide',
+          lazy: async () => ({ Component: (await import('@/pages/GuidePage')).default })
+        },
+        {
           path: 'applications/:applicationId/:environmentId',
           element: <ApplicationShell />,
           children: [

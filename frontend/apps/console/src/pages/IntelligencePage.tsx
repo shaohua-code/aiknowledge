@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert,
+  App,
   Button,
   Card,
   Collapse,
@@ -32,6 +32,7 @@ const MODE_LABELS: Record<string, string> = {
 }
 
 export default function IntelligencePage() {
+  const { message } = App.useApp()
   const queryClient = useQueryClient()
   const { applicationId, environmentId, application } = useApplicationContext()
   const [retrievalOpen, setRetrievalOpen] = useState(false)
@@ -73,7 +74,9 @@ export default function IntelligencePage() {
       })
       retrievalForm.resetFields()
       setRetrievalOpen(false)
-    }
+      message.success('检索策略已创建')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
   const createAnswer = useMutation({
     mutationFn: (values: Record<string, any>) => {
@@ -88,7 +91,9 @@ export default function IntelligencePage() {
       answerForm.resetFields()
       setProfileCode(row.code)
       setAnswerOpen(false)
-    }
+      message.success('回答策略已创建')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
   const runAnswer = useMutation({
     mutationFn: () => {
@@ -105,7 +110,8 @@ export default function IntelligencePage() {
         options: { includeCitations: true, includeEvidence: true }
       })
     },
-    onSuccess: setResult
+    onSuccess: setResult,
+    onError: (error) => message.error(asPlatformError(error).message)
   })
 
   if (collections.isLoading || retrievalProfiles.isLoading || answerProfiles.isLoading) {
@@ -126,7 +132,6 @@ export default function IntelligencePage() {
 
   const retrievalRows = retrievalProfiles.data ?? []
   const answerRows = answerProfiles.data ?? []
-  const answerError = runAnswer.error ? asPlatformError(runAnswer.error) : null
 
   return (
     <div className="workspace-page">
@@ -201,14 +206,6 @@ export default function IntelligencePage() {
                         spellCheck={false}
                       />
                     </label>
-                    {answerError && (
-                      <ErrorState
-                        title={answerError.title}
-                        message={answerError.message}
-                        requestId={answerError.requestId}
-                        suggestion={answerError.suggestion ?? undefined}
-                      />
-                    )}
                     <Button
                       type="primary"
                       loading={runAnswer.isPending}
@@ -353,9 +350,6 @@ export default function IntelligencePage() {
         onOk={() => retrievalForm.submit()}
         confirmLoading={createRetrieval.isPending}
       >
-        {createRetrieval.error && (
-          <Alert type="error" showIcon message={asPlatformError(createRetrieval.error).message} />
-        )}
         <Form
           form={retrievalForm}
           layout="vertical"
@@ -404,7 +398,6 @@ export default function IntelligencePage() {
         onOk={() => answerForm.submit()}
         confirmLoading={createAnswer.isPending}
       >
-        {createAnswer.error && <Alert type="error" showIcon message={asPlatformError(createAnswer.error).message} />}
         <Form
           form={answerForm}
           layout="vertical"

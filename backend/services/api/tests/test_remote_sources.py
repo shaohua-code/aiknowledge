@@ -92,6 +92,25 @@ async def test_private_address_has_clear_security_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_private_address_allowed_when_dev_flag_enabled(monkeypatch) -> None:
+    # 非生产 + 开关开启时，应跳过内网地址拦截并完成抓取。
+    monkeypatch.setattr(http_safety.settings, "app_env", "development")
+    monkeypatch.setattr(http_safety.settings, "remote_allow_private_addresses", True)
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="local-ok",
+        )
+    )
+    result = await fetch_public_source(
+        RemoteFetchRequest(url="http://127.0.0.1/private"),
+        transport=transport,
+    )
+    assert result.content == b"local-ok"
+
+
+@pytest.mark.asyncio
 async def test_api_html_response_explains_type_mismatch(allow_public_host) -> None:
     transport = httpx.MockTransport(
         lambda _request: httpx.Response(

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, Button, Checkbox, Form, Input, Modal, Popconfirm, Table, Typography } from 'antd'
+import { App, Button, Checkbox, Form, Input, Modal, Popconfirm, Table, Typography } from 'antd'
 import type { ApiKeyCreated } from '@aik/contracts'
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
@@ -14,6 +14,7 @@ const SCOPE_OPTIONS = [
 ]
 
 export default function DeveloperPage() {
+  const { message } = App.useApp()
   const queryClient = useQueryClient()
   const { applicationId, environmentId, environment } = useApplicationContext()
   const [open, setOpen] = useState(false)
@@ -31,11 +32,18 @@ export default function DeveloperPage() {
       setOpen(false)
       setCreated(row)
       form.resetFields()
-    }
+      // 密钥只显示一次的强提醒
+      message.warning('API Key 明文仅本次显示，关闭后将无法找回')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
   const revoke = useMutation({
     mutationFn: (keyId: string) => developerApi.revokeKey(applicationId, environmentId, keyId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys', applicationId, environmentId] })
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['api-keys', applicationId, environmentId] })
+      message.success('API Key 已吊销')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
   })
 
   if (keys.isLoading) return <LoadingState rows={7} />
@@ -104,7 +112,6 @@ export default function DeveloperPage() {
         onOk={() => form.submit()}
         confirmLoading={create.isPending}
       >
-        {create.error && <Alert type="error" showIcon message={asPlatformError(create.error).message} />}
         <Form
           form={form}
           layout="vertical"
@@ -128,12 +135,6 @@ export default function DeveloperPage() {
         closable={false}
         maskClosable={false}
       >
-        <Alert
-          type="warning"
-          showIcon
-          message="这是唯一一次显示完整密钥"
-          description="关闭后平台不能恢复明文，只能吊销并创建新 Key。"
-        />
         <Typography.Paragraph copyable className="secret-reveal">
           {created?.secret}
         </Typography.Paragraph>

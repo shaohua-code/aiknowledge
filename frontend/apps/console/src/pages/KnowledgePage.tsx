@@ -599,7 +599,7 @@ export default function KnowledgePage() {
           <Form.Item
             label="公开数据地址"
             name="url"
-            extra="支持安全重定向；内网、localhost、URL 账号密码和云元数据地址会被拒绝。"
+            extra="支持安全重定向；默认拒绝内网、localhost、URL 账号密码和云元数据地址。本地联调可在非生产环境开启 REMOTE_ALLOW_PRIVATE_ADDRESSES。"
             rules={[
               { required: true, message: '请输入数据地址' },
               { type: 'url', message: '请输入以 http:// 或 https:// 开头的完整地址' }

@@ -207,6 +207,9 @@ async def _assert_public_host(hostname: str) -> None:
             http_status=502,
             retryable=True,
         )
+    # 开发/测试可显式放开内网地址；生产始终走下方公网校验。
+    if settings.app_env != "production" and settings.remote_allow_private_addresses:
+        return
     if any(not address.is_global for address in addresses):
         raise RemoteSourceError(
             "REMOTE_PRIVATE_ADDRESS_BLOCKED",
@@ -214,6 +217,7 @@ async def _assert_public_host(hostname: str) -> None:
             "该地址指向内网、回环、链路本地或保留网络，平台已按安全策略阻止访问。",
             suggestion=(
                 "请提供可从公网直接访问的地址；localhost、局域网 IP 和云元数据地址均不允许。"
+                "本地联调可在非生产环境设置 REMOTE_ALLOW_PRIVATE_ADDRESSES=true。"
             ),
             details={"host": hostname},
         )
