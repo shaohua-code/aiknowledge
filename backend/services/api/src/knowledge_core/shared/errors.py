@@ -62,6 +62,12 @@ class ProviderUnavailableError(CoreError):
     retryable = True
 
 
+class EmbeddingDimensionError(CoreError):
+    code = "EMBEDDING_DIMENSION_MISMATCH"
+    title = "Embedding 维度与知识库不匹配"
+    http_status = 502
+
+
 class InsufficientEvidenceError(CoreError):
     code = "INSUFFICIENT_EVIDENCE"
     title = "证据不足"

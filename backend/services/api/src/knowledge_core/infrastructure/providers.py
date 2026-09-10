@@ -11,7 +11,7 @@ import httpx
 
 from knowledge_core.config import settings
 from knowledge_core.infrastructure.model_configuration import get_model_configuration
-from knowledge_core.shared.errors import ProviderUnavailableError
+from knowledge_core.shared.errors import EmbeddingDimensionError, ProviderUnavailableError
 
 
 class EmbeddingProvider(Protocol):
@@ -82,7 +82,12 @@ class OpenAICompatibleEmbeddingProvider:
             response = await client.post(
                 f"{configuration.embedding_base_url.rstrip('/')}/embeddings",
                 headers={"Authorization": f"Bearer {configuration.embedding_api_key}"},
-                json={"model": configuration.embedding_model, "input": texts},
+                # 显式指定输出维度，避免 Provider 默认维度与数据库 1536 维列不一致
+                json={
+                    "model": configuration.embedding_model,
+                    "input": texts,
+                    "dimensions": settings.embedding_dimension,
+                },
             )
         if response.status_code >= 400:
             raise ProviderUnavailableError(
@@ -93,6 +98,18 @@ class OpenAICompatibleEmbeddingProvider:
         vectors = [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
         if len(vectors) != len(texts):
             raise ProviderUnavailableError("Embedding Provider 返回数量与输入不一致")
+        # 兜底校验：部分 Provider 会忽略 dimensions 参数，静默返回其他维度
+        mismatched = next(
+            (len(vector) for vector in vectors if len(vector) != settings.embedding_dimension),
+            None,
+        )
+        if mismatched is not None:
+            raise EmbeddingDimensionError(
+                f"Embedding Provider 返回 {mismatched} 维向量，知识库要求 "
+                f"{settings.embedding_dimension} 维",
+                suggestion="请在“设置 → 模型与联网能力”中为 Embedding 模型配置 "
+                f"{settings.embedding_dimension} 维输出，或更换支持该维度的模型",
+            )
         return vectors
 
 

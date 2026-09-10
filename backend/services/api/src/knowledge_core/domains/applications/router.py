@@ -120,8 +120,11 @@ async def create_api_key(
     key, raw = await ApplicationService(session).create_api_key(
         application_id, environment_id, payload
     )
-    data = ApiKeyCreated.model_validate(key).model_dump(by_alias=True)
-    data["secret"] = raw
+    # 先按不含 secret 的视图模型序列化 ORM 行，再补一次性明文 secret 组装完整响应
+    # （直接 model_validate(ORM) 会因 ORM 无 secret 属性而抛 ValidationError）
+    data = ApiKeyCreated(
+        **ApiKeyView.model_validate(key).model_dump(), secret=raw
+    ).model_dump(by_alias=True)
     return success(data)
 
 

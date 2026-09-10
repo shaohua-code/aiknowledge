@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Descriptions, Divider, Form, Input, Select, Space, Spin, Tag } from 'antd'
+import { App, Alert, Button, Descriptions, Divider, Form, Input, Select, Space, Spin, Tag } from 'antd'
 import type { ModelConfigurationUpdate } from '@aik/contracts'
 import { PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'

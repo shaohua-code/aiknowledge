@@ -108,6 +108,8 @@ export default function KnowledgePage() {
   const [remoteOpen, setRemoteOpen] = useState(false)
   const [runError, setRunError] = useState<IngestionRun | null>(null)
   const [activeTab, setActiveTab] = useState('collections')
+  // 顶部使用引导是否展开（可关闭）
+  const [guideOpen, setGuideOpen] = useState(true)
   const [selectedCollectionId, setSelectedCollectionId] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [collectionForm] = Form.useForm()
@@ -281,6 +283,26 @@ export default function KnowledgePage() {
         }
       />
 
+      {/* 顶部使用引导：四步流程，可关闭，默认展开 */}
+      {guideOpen && (
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          closable
+          onClose={() => setGuideOpen(false)}
+          message="四步让知识真正参与回答"
+          description={
+            <div>
+              <p>① 创建或选择知识集合：点击上方「新建知识集合」，或用下拉框切换到已有集合。</p>
+              <p>② 点击「添加知识」上传文件、录入文本或抓取互联网资料。</p>
+              <p>③ 提交后自动跳到「入库运行」查看进度，状态变为「ready / 发布完成」后知识才会参与回答。</p>
+              <p>④ 到左侧「AI 能力」配置策略并实测回答效果。</p>
+            </div>
+          }
+        />
+      )}
+
       {rows.length === 0 ? (
         <EmptyState
           title="还没有知识集合"
@@ -316,41 +338,59 @@ export default function KnowledgePage() {
               key: 'collections',
               label: `知识集合 ${rows.length}`,
               children: (
-                <div className="collection-grid">
-                  {rows.map((item) => (
-                    <button
-                      type="button"
-                      key={item.id}
-                      aria-pressed={selectedCollectionId === item.id}
-                      className={`collection-card ${selectedCollectionId === item.id ? 'selected' : ''}`}
-                      onClick={() => setSelectedCollectionId(item.id)}
-                    >
-                      <span className="collection-icon">K</span>
-                      <span>
-                        <strong>{item.name}</strong>
-                        <small>{item.description || item.code}</small>
-                      </span>
-                      <span className="collection-counts">
-                        {item.documentCount} 文档 · {item.chunkCount} 片段
-                      </span>
-                      <StatusPill status={item.status} />
-                    </button>
-                  ))}
-                </div>
+                <>
+                  {/* Tab 说明：集合的定位与卡片交互 */}
+                  <Alert
+                    className="knowledge-guide-alert"
+                    type="info"
+                    showIcon
+                    message="知识集合是知识的分组边界，建议按主题拆分（如「简历规范」「岗位能力模型」）。卡片显示文档数与片段数，点击卡片即可切换当前集合。"
+                  />
+                  <div className="collection-grid">
+                    {rows.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        aria-pressed={selectedCollectionId === item.id}
+                        className={`collection-card ${selectedCollectionId === item.id ? 'selected' : ''}`}
+                        onClick={() => setSelectedCollectionId(item.id)}
+                      >
+                        <span className="collection-icon">K</span>
+                        <span>
+                          <strong>{item.name}</strong>
+                          <small>{item.description || item.code}</small>
+                        </span>
+                        <span className="collection-counts">
+                          {item.documentCount} 文档 · {item.chunkCount} 片段
+                        </span>
+                        <StatusPill status={item.status} />
+                      </button>
+                    ))}
+                  </div>
+                </>
               )
             },
             {
               key: 'documents',
               label: `文档与版本 ${documents.data?.length ?? 0}`,
-              children: documents.isLoading ? (
-                <LoadingState />
-              ) : documents.isError ? (
-                <ErrorState
-                  message={asPlatformError(documents.error).message}
-                  requestId={asPlatformError(documents.error).requestId}
-                  onRetry={() => documents.refetch()}
-                />
-              ) : (
+              children: (
+                <>
+                  {/* Tab 说明：文档状态与版本行为 */}
+                  <Alert
+                    className="knowledge-guide-alert"
+                    type="info"
+                    showIcon
+                    message="只有状态为 ready 的文档才参与检索。「重新抓取」会为远程文档创建新版本并重新入库（旧版本在新版本发布前仍可检索）；「归档」后文档不再参与检索，审计记录保留。"
+                  />
+                  {documents.isLoading ? (
+                    <LoadingState />
+                  ) : documents.isError ? (
+                    <ErrorState
+                      message={asPlatformError(documents.error).message}
+                      requestId={asPlatformError(documents.error).requestId}
+                      onRetry={() => documents.refetch()}
+                    />
+                  ) : (
                 <Table
                   rowKey="id"
                   dataSource={documents.data ?? []}
@@ -397,16 +437,27 @@ export default function KnowledgePage() {
                     }
                   ]}
                 />
+                  )}
+                </>
               )
             },
             {
               key: 'runs',
               label: `入库运行 ${runs.data?.length ?? 0}`,
-              children: runs.isLoading ? (
-                <LoadingState />
-              ) : runs.isError ? (
-                <ErrorState message={asPlatformError(runs.error).message} onRetry={() => runs.refetch()} />
-              ) : (
+              children: (
+                <>
+                  {/* Tab 说明：入库流水线与失败处理 */}
+                  <Alert
+                    className="knowledge-guide-alert"
+                    type="info"
+                    showIcon
+                    message="入库是异步流水线：抓取 → 解析 → 切割 → 生成向量 → 写入索引 → 发布。失败时点「查看失败原因」按错误码处理，修复后点「重试」；处理中的任务每 3 秒自动刷新。"
+                  />
+                  {runs.isLoading ? (
+                    <LoadingState />
+                  ) : runs.isError ? (
+                    <ErrorState message={asPlatformError(runs.error).message} onRetry={() => runs.refetch()} />
+                  ) : (
                 <Table
                   rowKey="id"
                   dataSource={runs.data ?? []}
@@ -453,6 +504,8 @@ export default function KnowledgePage() {
                     { title: '创建时间', dataIndex: 'createdAt', render: (value) => new Date(value).toLocaleString() }
                   ]}
                 />
+                  )}
+                </>
               )
             }
           ]}
@@ -505,6 +558,13 @@ export default function KnowledgePage() {
         width={620}
       >
         <MutationErrorAlert error={upload.error} />
+        {/* 上传说明：适用文件类型、大小限制与后续去向 */}
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          message="适合 PDF 报告、Word 规范、TXT / Markdown 笔记；单个文件不超过 20MB。提交后会自动跳到「入库运行」查看处理进度。"
+        />
         <span className="modal-field-label">目标知识集合</span>
         <Select
           value={selectedCollectionId}
@@ -542,6 +602,13 @@ export default function KnowledgePage() {
         width={680}
       >
         <MutationErrorAlert error={createText.error} />
+        {/* 录入说明：适用内容与后续去向 */}
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          message="适合直接粘贴规章制度、FAQ、产品说明等纯文本内容。提交后会自动跳到「入库运行」查看处理进度。"
+        />
         <Form form={textForm} layout="vertical" onFinish={(values) => createText.mutate(values)}>
           <Form.Item label="标题" name="title" rules={[{ required: true }]}>
             <Input />
@@ -571,6 +638,13 @@ export default function KnowledgePage() {
           <span>普通网页</span><span>JSON / NDJSON API</span><span>RSS / Atom / XML</span>
           <span>CSV / TSV</span><span>纯文本 / Markdown</span><span>常见中文编码</span>
         </div>
+        {/* 接入说明：地址要求、建议先测试与后续去向 */}
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          message="仅支持公网可访问、无需登录的地址。建议先点「测试连接并预览」确认抓到正文再提交；提交后会自动跳到「入库运行」查看抓取进度。"
+        />
         <MutationErrorAlert error={createRemote.error} />
         <MutationErrorAlert error={previewRemote.error} />
         <Form
@@ -729,6 +803,19 @@ export default function KnowledgePage() {
               showIcon
               message={runError.errorCode || '入库任务失败'}
               description={runError.errorMessage || '没有记录到详细错误，请使用请求 ID 查询 Worker 日志。'}
+            />
+            {/* 处理指引：按错误码分类给出修复路径 */}
+            <Alert
+              type="warning"
+              showIcon
+              message="如何按错误码处理"
+              description={
+                <div>
+                  <p>内容类错误（INGESTION_* / REMOTE_*）：检查文件内容或数据地址是否正常后重试。</p>
+                  <p>EMBEDDING_DIMENSION_MISMATCH / PROVIDER_UNAVAILABLE：先到「设置 → 模型与联网能力」检查 Embedding 模型配置（输出维度需为 1536），再重试。</p>
+                  <p>仍失败：复制请求 ID，到「运行与质量」查询诊断。</p>
+                </div>
+              }
             />
             <Descriptions
               size="small"
