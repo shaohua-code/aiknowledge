@@ -19,6 +19,7 @@ from knowledge_core.domains.intelligence.repository import IntelligenceRepositor
 from knowledge_core.domains.intelligence.retrieval import RetrievalHit, RetrievalService
 from knowledge_core.domains.intelligence.schemas import AnswerRequest
 from knowledge_core.domains.operations.repository import OperationRepository
+from knowledge_core.infrastructure.models import RequestTrace
 from knowledge_core.infrastructure.providers import (
     WebSearchHit,
     get_chat_provider,
@@ -67,8 +68,8 @@ class AnswerService:
                 context, retrieval_profile, payload.query
             )
             retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000)
-            chat = get_chat_provider()
-            web = get_web_search_provider()
+            chat = get_chat_provider(context.application_id)
+            web = get_web_search_provider(context.application_id)
             decision = decide_answer_mode(
                 hits,
                 profile,
@@ -234,9 +235,12 @@ class AnswerService:
                 "timing": {"retrievalMs": retrieval_ms, "totalMs": total_ms},
             }
         except Exception as exc:
+            # rollback 会过期会话内所有 ORM 实例；先取出主键再回滚，否则回滚后
+            # 访问 trace.id 会触发同步懒加载刷新，在异步上下文中抛 MissingGreenlet
+            trace_id = trace.id
             await self.session.rollback()
             # 使用独立、重新加载的轨迹记录失败，避免原事务损坏后丢失诊断信息。
-            failed_trace = await self.session.get(type(trace), trace.id)
+            failed_trace = await self.session.get(RequestTrace, trace_id)
             if failed_trace:
                 await self.operations.finish_trace(
                     failed_trace,

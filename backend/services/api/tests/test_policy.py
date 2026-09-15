@@ -1,3 +1,5 @@
+"""验证回答策略在证据充分、陈旧或不可用时选择正确的回答模式。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

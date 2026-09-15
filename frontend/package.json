@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "pnpm --filter @aik/console dev",
     "build": "pnpm --filter @aik/contracts typecheck && pnpm --filter @aik/ui typecheck && pnpm --filter @aik/console build",
-    "contracts:export": "../backend/services/api/.venv/Scripts/python.exe ../backend/scripts/export_openapi.py",
+    "contracts:export": "node ./scripts/export-openapi.mjs",
+    "contracts:generate": "pnpm contracts:export && pnpm dlx openapi-typescript@7.9.1 ./packages/contracts/openapi.json -o ./packages/contracts/src/openapi.generated.ts",
     "lint": "pnpm --filter @aik/console lint",
     "test": "pnpm --filter @aik/console test"
   }

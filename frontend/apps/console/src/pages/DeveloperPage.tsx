@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Checkbox, Form, Input, Modal, Popconfirm, Table, Typography } from 'antd'
+import { App, Button, Checkbox, Form, Input, Modal, Popconfirm, Table, Tabs, Typography } from 'antd'
 import type { ApiKeyCreated } from '@aik/contracts'
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
@@ -13,6 +13,23 @@ const SCOPE_OPTIONS = [
   { label: '提交反馈 feedback:write', value: 'feedback:write' }
 ]
 
+// 示例只使用公开运行面字段和占位 Key，避免控制台把管理员会话或真实业务凭据带入代码块。
+const RUNTIME_EXAMPLES = {
+  answer: `curl -X POST http://localhost:8000/runtime/v1/answer \\
+  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"profile":"resume_job_match","query":"如何优化项目经历？","inputs":{}}'`,
+  retrieve: `curl -X POST http://localhost:8000/runtime/v1/retrieve \\
+  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"profile":"resume_job_knowledge","query":"高级前端需要哪些工程能力？","topK":8}'`,
+  feedback: `curl -X POST http://localhost:8000/runtime/v1/feedback \\
+  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"requestId":"上次回答返回的 requestId","rating":-1,"reasonCode":"MISSING_EVIDENCE"}'`
+}
+
+// 开发接入页只管理当前应用环境的 Key，并提供可直接复制的无密钥运行面契约示例。
 export default function DeveloperPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -51,11 +68,6 @@ export default function DeveloperPage() {
     const error = asPlatformError(keys.error)
     return <ErrorState message={error.message} requestId={error.requestId} onRetry={() => keys.refetch()} />
   }
-
-  const example = `curl -X POST http://localhost:8000/runtime/v1/answer \\
-  -H "Authorization: Bearer <YOUR_API_KEY>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"profile":"resume_job_match","query":"如何优化项目经历？","inputs":{}}'`
 
   return (
     <div className="workspace-page">
@@ -102,7 +114,28 @@ export default function DeveloperPage() {
             <h2>最小调用示例</h2>
           </div>
         </div>
-        <pre>{example}</pre>
+        <Tabs
+          items={[
+            { key: 'answer', label: '回答 · answer:run', children: <pre>{RUNTIME_EXAMPLES.answer}</pre> },
+            { key: 'retrieve', label: '检索 · knowledge:read', children: <pre>{RUNTIME_EXAMPLES.retrieve}</pre> },
+            { key: 'feedback', label: '反馈 · feedback:write', children: <pre>{RUNTIME_EXAMPLES.feedback}</pre> }
+          ]}
+        />
+      </section>
+
+      <section className="panel-card code-example">
+        <div className="section-heading compact">
+          <div>
+            <span className="aik-eyebrow">INTEGRATION CHECKLIST</span>
+            <h2>接入检查</h2>
+          </div>
+        </div>
+        <ul>
+          <li>只在业务后端的密钥管理系统保存 Key；不写入浏览器、日志或前端环境变量。</li>
+          <li>按调用用途签发最小 Scope；检索、回答和反馈应使用可独立吊销的 Key。</li>
+          <li>保存每次成功或失败响应的 requestId；可在运行中心定位证据、策略修订、耗时与错误。</li>
+          <li>仅对 <code>retryable=true</code> 的错误使用有上限的退避重试，不能把失败重试伪装成成功。</li>
+        </ul>
       </section>
 
       <Modal

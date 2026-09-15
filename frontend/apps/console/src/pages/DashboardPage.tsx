@@ -6,6 +6,7 @@ import { ErrorState, LoadingState, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
 import { applicationApi, getHealth } from '@/api/platform'
 import LineIcon from '@/components/LineIcon'
+import { healthCheckDescription } from '@/features/dashboard/healthCheck'
 
 const applicationTypeNames: Record<string, string> = {
   resume: 'AI 简历',
@@ -17,9 +18,10 @@ const applicationTypeNames: Record<string, string> = {
 const healthCheckNames: Record<string, string> = {
   database: 'PostgreSQL 数据库',
   redis: 'Redis 任务队列',
-  chat_provider: '大模型服务',
-  embedding_provider: '向量模型服务',
-  web_search_provider: '联网检索服务'
+  worker: 'Celery Worker',
+  chatProvider: '大模型服务',
+  embeddingProvider: '向量模型服务',
+  searchProvider: '联网检索服务'
 }
 
 function OverviewMetric({
@@ -250,7 +252,7 @@ export default function DashboardPage() {
                     <span className="readiness-icon"><LineIcon name={name.includes('database') ? 'database' : name.includes('redis') ? 'pulse' : 'sparkle'} size={17} /></span>
                     <span>
                       <strong>{healthCheckNames[name] ?? (name === 'api' ? '平台 API' : name)}</strong>
-                      <small>{['ok', 'ready'].includes(item.status) ? '连接正常' : item.status === 'checking' ? '正在检测' : '需要配置或检查'}</small>
+                      <small>{healthCheckDescription(item.status)}</small>
                     </span>
                     <i className={`readiness-dot state-${item.status}`} />
                   </div>

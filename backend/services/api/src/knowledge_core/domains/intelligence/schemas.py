@@ -15,7 +15,9 @@ class RetrievalProfileCreate(ApiSchema):
     name: str = Field(min_length=2, max_length=160)
     collection_ids: list[UUID] = Field(min_length=1)
     top_k: int = Field(default=8, ge=1, le=30)
-    minimum_score: float = Field(default=0.55, ge=0, le=1)
+    # 默认 0.2：混合得分 = 向量*0.65 + 词法*0.35，短问题词法分通常为 0，
+    # 0.55 要求余弦相似度≥0.85，中文真实语料几乎达不到，会把有效证据全部过滤
+    minimum_score: float = Field(default=0.2, ge=0, le=1)
     vector_weight: float = Field(default=0.65, ge=0, le=1)
     lexical_weight: float = Field(default=0.35, ge=0, le=1)
     metadata_filters: dict[str, str | int | float | bool] = Field(default_factory=dict)

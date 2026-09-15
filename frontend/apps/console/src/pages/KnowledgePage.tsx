@@ -19,7 +19,13 @@ import {
   Upload
 } from 'antd'
 import type { MenuProps } from 'antd'
-import type { IngestionRun, RemoteSourcePreview } from '@aik/contracts'
+import type {
+  DocumentRevision,
+  IngestionRun,
+  KnowledgeDocument,
+  RemoteSourcePreview,
+  TextRevisionCreateInput
+} from '@aik/contracts'
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
 import { knowledgeApi, type RemoteSourcePayload } from '@/api/platform'
@@ -105,15 +111,23 @@ export default function KnowledgePage() {
   const [collectionOpen, setCollectionOpen] = useState(false)
   const [documentOpen, setDocumentOpen] = useState(false)
   const [textOpen, setTextOpen] = useState(false)
+  const [textRevisionOpen, setTextRevisionOpen] = useState(false)
+  const [fileRevisionOpen, setFileRevisionOpen] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
+  const [documentDetail, setDocumentDetail] = useState<KnowledgeDocument | null>(null)
+  // 新版本单独保存目标文档，避免详情抽屉关闭后丢失写入归属。
+  const [revisionTarget, setRevisionTarget] = useState<KnowledgeDocument | null>(null)
+  const [selectedRevision, setSelectedRevision] = useState<DocumentRevision | null>(null)
   const [runError, setRunError] = useState<IngestionRun | null>(null)
   const [activeTab, setActiveTab] = useState('collections')
   // 顶部使用引导是否展开（可关闭）
   const [guideOpen, setGuideOpen] = useState(true)
   const [selectedCollectionId, setSelectedCollectionId] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [revisionFile, setRevisionFile] = useState<File | null>(null)
   const [collectionForm] = Form.useForm()
   const [textForm] = Form.useForm()
+  const [textRevisionForm] = Form.useForm<TextRevisionCreateInput>()
   const [remoteForm] = Form.useForm()
   const remoteMethod = Form.useWatch('method', remoteForm)
 
@@ -137,6 +151,25 @@ export default function KnowledgePage() {
     refetchInterval: (query) =>
       query.state.data?.some((item) => ['queued', 'running'].includes(item.status)) ? 3000 : false
   })
+  const revisions = useQuery({
+    queryKey: ['document-revisions', applicationId, environmentId, documentDetail?.id],
+    queryFn: () => knowledgeApi.revisions(applicationId, environmentId, documentDetail!.id),
+    enabled: Boolean(documentDetail)
+  })
+  const chunks = useQuery({
+    queryKey: ['document-chunks', applicationId, environmentId, documentDetail?.id, selectedRevision?.id],
+    queryFn: () =>
+      knowledgeApi.revisionChunks(
+        applicationId,
+        environmentId,
+        documentDetail!.id,
+        selectedRevision!.id
+      ),
+    enabled: Boolean(documentDetail && selectedRevision)
+  })
+  useEffect(() => {
+    if (!selectedRevision && revisions.data?.[0]) setSelectedRevision(revisions.data[0])
+  }, [revisions.data, selectedRevision])
 
   const refreshKnowledge = async () => {
     await Promise.all([
@@ -181,6 +214,39 @@ export default function KnowledgePage() {
       message.success('文本已提交，正在后台入库')
     }
   })
+  const createTextRevision = useMutation({
+    mutationFn: (values: TextRevisionCreateInput) => {
+      if (!revisionTarget) throw new Error('请选择需要更新的文档')
+      return knowledgeApi.createTextRevision(applicationId, environmentId, revisionTarget.id, values)
+    },
+    onSuccess: async () => {
+      await refreshKnowledge()
+      setTextRevisionOpen(false)
+      setRevisionTarget(null)
+      textRevisionForm.resetFields()
+      setActiveTab('runs')
+      message.success('新文本版本已提交，正在后台入库')
+    }
+  })
+  const uploadRevision = useMutation({
+    mutationFn: () => {
+      if (!revisionTarget || !revisionFile) throw new Error('请选择需要更新的文档和文件')
+      return knowledgeApi.uploadRevision(
+        applicationId,
+        environmentId,
+        revisionTarget.id,
+        revisionFile
+      )
+    },
+    onSuccess: async () => {
+      await refreshKnowledge()
+      setFileRevisionOpen(false)
+      setRevisionTarget(null)
+      setRevisionFile(null)
+      setActiveTab('runs')
+      message.success('新文件版本已提交，正在后台入库')
+    }
+  })
   const createRemote = useMutation({
     mutationFn: (values: RemoteSourceForm) =>
       knowledgeApi.createRemote(
@@ -214,6 +280,21 @@ export default function KnowledgePage() {
       message.success('入库任务已重新提交')
     }
   })
+  const rollbackRevision = useMutation({
+    mutationFn: (revisionId: string) =>
+      knowledgeApi.rollbackRevision(
+        applicationId,
+        environmentId,
+        documentDetail!.id,
+        revisionId
+      ),
+    onSuccess: async (document) => {
+      await refreshKnowledge()
+      await revisions.refetch()
+      setDocumentDetail(document)
+      message.success(`已回滚到版本 v${document.currentVersion}`)
+    }
+  })
   const archiveDocument = useMutation({
     mutationFn: (documentId: string) =>
       knowledgeApi.archiveDocument(applicationId, environmentId, documentId),
@@ -231,6 +312,19 @@ export default function KnowledgePage() {
       message.success('已创建新版本，正在重新抓取远程数据')
     }
   })
+
+  const openRevisionEditor = (document: KnowledgeDocument) => {
+    // 文本资料允许直接录入新版正文；其余类型必须通过文件上传保留格式与解析语义。
+    setRevisionTarget(document)
+    if (document.mimeType?.startsWith('text/')) {
+      createTextRevision.reset()
+      setTextRevisionOpen(true)
+      return
+    }
+    uploadRevision.reset()
+    setRevisionFile(null)
+    setFileRevisionOpen(true)
+  }
 
   if (collections.isLoading) return <LoadingState rows={8} />
   if (collections.isError) {
@@ -410,6 +504,18 @@ export default function KnowledgePage() {
                       title: '操作',
                       render: (_, row) => (
                         <Space size={2}>
+                          <Button
+                            type="link"
+                            onClick={() => {
+                              setDocumentDetail(row)
+                              setSelectedRevision(null)
+                            }}
+                          >
+                            查看版本
+                          </Button>
+                          <Button type="link" onClick={() => openRevisionEditor(row)}>
+                            {row.mimeType?.startsWith('text/') ? '更新文本' : '上传新版本'}
+                          </Button>
                           {row.sourceUrl && (
                             <Button
                               type="link"
@@ -514,6 +620,77 @@ export default function KnowledgePage() {
       )}
 
       <Modal
+        title={documentDetail ? `文档版本 · ${documentDetail.title}` : '文档版本'}
+        open={Boolean(documentDetail)}
+        onCancel={() => {
+          setDocumentDetail(null)
+          setSelectedRevision(null)
+        }}
+        footer={null}
+        width={900}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="版本和片段仅供管理员核验入库结果；归档不会物理删除历史记录。"
+        />
+        <Table<DocumentRevision>
+          className="document-revision-table"
+          rowKey="id"
+          loading={revisions.isLoading}
+          dataSource={revisions.data ?? []}
+          pagination={false}
+          rowSelection={{
+            type: 'radio',
+            selectedRowKeys: selectedRevision ? [selectedRevision.id] : [],
+            onChange: (_, rows) => setSelectedRevision(rows[0] ?? null)
+          }}
+          columns={[
+            { title: '版本', dataIndex: 'version', render: (value) => `v${value}` },
+            { title: '状态', dataIndex: 'status', render: (value) => <StatusPill status={value} /> },
+            { title: '字符数', dataIndex: 'charCount' },
+            { title: '发布时间', dataIndex: 'publishedAt', render: (value) => value ? new Date(value).toLocaleString() : '-' },
+            {
+              title: '操作',
+              render: (_, row) => row.status === 'ready' && row.version !== documentDetail?.currentVersion ? (
+                <Popconfirm
+                  title={`回滚到 v${row.version}？`}
+                  description="只切换当前检索版本，历史版本和对象存储文件都会保留。"
+                  onConfirm={() => rollbackRevision.mutate(row.id)}
+                >
+                  <Button
+                    type="link"
+                    loading={rollbackRevision.isPending && rollbackRevision.variables === row.id}
+                  >
+                    回滚到此版本
+                  </Button>
+                </Popconfirm>
+              ) : row.version === documentDetail?.currentVersion ? '当前版本' : '-'
+            }
+          ]}
+        />
+        <Collapse
+          className="document-chunk-preview"
+          items={[
+            {
+              key: 'chunks',
+              label: `片段预览 ${chunks.data?.length ?? 0}`,
+              children: chunks.isLoading ? <LoadingState rows={3} /> : (
+                <Descriptions
+                  column={1}
+                  size="small"
+                  items={(chunks.data ?? []).map((chunk) => ({
+                    key: chunk.id,
+                    label: `#${chunk.chunkIndex}${chunk.section ? ` · ${chunk.section}` : ''}`,
+                    children: <pre className="document-chunk-content">{chunk.content}</pre>
+                  }))}
+                />
+              )
+            }
+          ]}
+        />
+      </Modal>
+      <Modal
         title="新建知识集合"
         open={collectionOpen}
         onCancel={() => {
@@ -617,6 +794,76 @@ export default function KnowledgePage() {
             <Input.TextArea rows={10} showCount maxLength={2_000_000} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={revisionTarget ? `更新文本版本 · ${revisionTarget.title}` : '更新文本版本'}
+        open={textRevisionOpen}
+        onCancel={() => {
+          setTextRevisionOpen(false)
+          setRevisionTarget(null)
+          createTextRevision.reset()
+          textRevisionForm.resetFields()
+        }}
+        onOk={() => textRevisionForm.submit()}
+        confirmLoading={createTextRevision.isPending}
+        okText="提交新版本"
+        width={680}
+      >
+        <MutationErrorAlert error={createTextRevision.error} />
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          message="提交后会创建新的异步入库版本；当前已发布版本会继续用于检索，直到新版本发布成功。"
+        />
+        <Form
+          form={textRevisionForm}
+          layout="vertical"
+          onFinish={(values: TextRevisionCreateInput) => createTextRevision.mutate(values)}
+        >
+          <Form.Item label="新版本正文" name="content" rules={[{ required: true }]}>
+            <Input.TextArea rows={12} showCount maxLength={2_000_000} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={revisionTarget ? `上传新文件版本 · ${revisionTarget.title}` : '上传新文件版本'}
+        open={fileRevisionOpen}
+        onCancel={() => {
+          setFileRevisionOpen(false)
+          setRevisionTarget(null)
+          setRevisionFile(null)
+          uploadRevision.reset()
+        }}
+        onOk={() => uploadRevision.mutate()}
+        confirmLoading={uploadRevision.isPending}
+        okButtonProps={{ disabled: !revisionFile }}
+        okText="提交新版本"
+        width={620}
+      >
+        <MutationErrorAlert error={uploadRevision.error} />
+        <Alert
+          className="knowledge-guide-alert"
+          type="info"
+          showIcon
+          message="新文件会创建独立版本并异步解析；旧的已发布版本保持可检索，历史文件和审计记录不会被覆盖。"
+        />
+        <Upload.Dragger
+          className="upload-dragger"
+          maxCount={1}
+          beforeUpload={(nextFile) => {
+            setRevisionFile(nextFile)
+            return false
+          }}
+          onRemove={() => setRevisionFile(null)}
+          accept=".pdf,.docx,.txt,.md"
+        >
+          <p className="upload-glyph">⇧</p>
+          <p>拖入新的 PDF、DOCX、TXT 或 Markdown 文件</p>
+          <p className="muted">单个文件不超过 20MB</p>
+        </Upload.Dragger>
       </Modal>
 
       <Modal

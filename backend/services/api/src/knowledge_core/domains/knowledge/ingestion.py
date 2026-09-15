@@ -198,13 +198,72 @@ def _parse_pdf(content: bytes) -> list[ParsedBlock]:
     return blocks
 
 
+_WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MARKUP_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+
+
+def _iter_visible_paragraphs(element):
+    """按文档顺序产出 w:p，跳过 mc:Fallback 子树（其中是 mc:Choice 内容的简化副本）。"""
+    for child in element:
+        if child.tag == f"{_MARKUP_NS}Fallback":
+            continue
+        if child.tag == f"{_WORD_NS}p":
+            yield child
+        else:
+            yield from _iter_visible_paragraphs(child)
+
+
+def _paragraph_visible_text(paragraph) -> str:
+    """聚合 w:p 内可见文本；mc:AlternateContent 可能嵌在段落内部（run 级），
+    其 mc:Fallback 分支装着同样内容的简化副本，必须一并跳过避免重复。"""
+    parts: list[str] = []
+
+    def walk(element) -> None:
+        for child in element:
+            if child.tag == f"{_MARKUP_NS}Fallback":
+                continue
+            if child.tag == f"{_WORD_NS}t":
+                parts.append(child.text or "")
+            else:
+                walk(child)
+
+    walk(paragraph)
+    return "".join(parts).strip()
+
+
 def _parse_docx(content: bytes) -> list[ParsedBlock]:
     document = WordDocument(io.BytesIO(content))
     paragraphs = [
         paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()
     ]
+    # 简历等排版模板常把正文放在表格里，python-docx 的 paragraphs 覆盖不到，需要补表格文本
+    seen_cells: set[int] = set()
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                # 合并单元格会被重复遍历，按底层 XML 节点去重
+                if id(cell._tc) in seen_cells:
+                    continue
+                seen_cells.add(id(cell._tc))
+                text = cell.text.strip()
+                if text:
+                    paragraphs.append(text)
     if not paragraphs:
-        raise ValueError("DOCX 没有可提取文本")
+        # 设计类模板（如简历）常把全部内容放在文本框/形状里，python-docx 不暴露这些对象，
+        # 退回 XML 级提取：按 w:p 聚合内部 w:t 文本节点，保留行文结构
+        seen_texts: set[str] = set()
+        for paragraph in _iter_visible_paragraphs(document.element.body):
+            text = _paragraph_visible_text(paragraph)
+            if not text:
+                continue
+            # 兜底去重：同一段文字被多个文本框重复引用时只保留第一份
+            key = re.sub(r"\s+", "", text)
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            paragraphs.append(text)
+    if not paragraphs:
+        raise ValueError("DOCX 没有可提取文本，若内容全在图片中需要先 OCR")
     return [ParsedBlock("\n\n".join(paragraphs))]
 
 

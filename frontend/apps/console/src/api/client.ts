@@ -1,5 +1,15 @@
 import axios, { type AxiosRequestConfig } from 'axios'
-import type { ApiEnvelope, ApiErrorBody } from '@aik/contracts'
+import type {
+  ApiEnvelope,
+  ApiErrorBody,
+  OpenApiHttpMethod,
+  OpenApiOperationBody,
+  OpenApiOperationData,
+  OpenApiOperationMultipartBody,
+  OpenApiPathParameter,
+  OpenApiOperationQuery,
+  paths
+} from '@aik/contracts'
 
 export class PlatformError extends Error {
   readonly code: string
@@ -109,6 +119,24 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
   }
 }
 
+/**
+ * 将 OpenAPI 模板路径替换为已编码的路径参数。
+ *
+ * 仅由调用方提供参数值，模板本身只能来自生成的 paths，避免将任意 URL 当作受契约保护的路径。
+ */
+function resolveOperationPath<Path extends keyof paths>(
+  path: Path,
+  parameters: Record<OpenApiPathParameter<Path>, string>
+): string {
+  return String(path).replace(/\{([^}]+)\}/g, (placeholder, parameter: string) => {
+    const value = parameters[parameter as OpenApiPathParameter<Path>]
+    if (value === undefined) {
+      throw new Error(`缺少 OpenAPI 路径参数：${parameter}`)
+    }
+    return encodeURIComponent(value)
+  })
+}
+
 export const apiClient = {
   get<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'GET', url })
@@ -124,6 +152,110 @@ export const apiClient = {
   },
   delete<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'DELETE', url })
+  },
+  /**
+   * 调用 OpenAPI 路径表中的无 JSON 请求体操作。
+   *
+   * 该入口只负责类型收敛；运行时仍复用既有 Axios、Cookie、超时和统一错误解析，
+   * 避免为了生成客户端改变已验证的会话边界。
+   */
+  operation<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({ ...config, method: method.toUpperCase(), url: path })
+  },
+  /** 调用 OpenAPI 路径表中的 JSON 写操作，请求体与响应数据均由快照推导。 */
+  operationWithBody<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    data: OpenApiOperationBody<Path, Method>,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: path,
+      data
+    })
+  },
+  /** 调用带路径参数、没有 JSON Body 的 OpenAPI 操作。 */
+  operationAt<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    parameters: Record<OpenApiPathParameter<Path>, string>,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: resolveOperationPath(path, parameters)
+    })
+  },
+  /** 调用同时具有路径参数和 JSON Body 的 OpenAPI 操作。 */
+  operationAtWithBody<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    parameters: Record<OpenApiPathParameter<Path>, string>,
+    data: OpenApiOperationBody<Path, Method>,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: resolveOperationPath(path, parameters),
+      data
+    })
+  },
+  /** 调用带 query 参数的静态路径操作，筛选字段直接由 OpenAPI 操作推导。 */
+  operationWithQuery<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    query: OpenApiOperationQuery<Path, Method>,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: path,
+      params: query
+    })
+  },
+  /** 调用同时具有路径与 query 参数的操作，二者均受生成契约约束。 */
+  operationAtWithQuery<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    parameters: Record<OpenApiPathParameter<Path>, string>,
+    query: OpenApiOperationQuery<Path, Method>,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: resolveOperationPath(path, parameters),
+      params: query
+    })
+  },
+  /**
+   * 调用 OpenAPI 声明为 multipart 的文件操作。
+   *
+   * FormData 的二进制构造仍留在页面适配层，但模板、方法和成功响应由生成契约限制；
+   * 不手设 Content-Type，让浏览器附加正确 boundary。
+   */
+  operationAtWithFormData<Path extends keyof paths, Method extends OpenApiHttpMethod>(
+    method: Method,
+    path: Path,
+    parameters: Record<OpenApiPathParameter<Path>, string>,
+    data: OpenApiOperationMultipartBody<Path, Method> extends never ? never : FormData,
+    config?: AxiosRequestConfig
+  ) {
+    return request<OpenApiOperationData<Path, Method>>({
+      ...config,
+      method: method.toUpperCase(),
+      url: resolveOperationPath(path, parameters),
+      data
+    })
   }
 }
 

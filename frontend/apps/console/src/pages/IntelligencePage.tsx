@@ -18,7 +18,15 @@ import {
   Tabs
 } from 'antd'
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
-import type { AnswerResult } from '@aik/contracts'
+import type {
+  AnswerProfileRevisionDraft,
+  AnswerProfileCreateInput,
+  AnswerDebugRequestInput,
+  AnswerResult,
+  ProfileRevision,
+  RetrievalProfileRevisionDraft,
+  RetrievalProfileCreateInput
+} from '@aik/contracts'
 import { asPlatformError } from '@/api/client'
 import { intelligenceApi, knowledgeApi } from '@/api/platform'
 import { useApplicationContext } from '@/hooks/useApplicationContext'
@@ -32,19 +40,121 @@ const MODE_LABELS: Record<string, string> = {
   DEGRADED: '降级回答'
 }
 
+interface RetrievalProfileFormValues {
+  code: string
+  name: string
+  collectionIds: string[]
+  topK: number
+  minimumScore: number
+  vectorWeight: number
+  lexicalWeight: number
+  metadataFilters?: string
+}
+
+interface AnswerProfileFormValues {
+  code: string
+  name: string
+  retrievalProfileId: string
+  systemPrompt?: string
+  outputSchema?: string
+  knowledgeRequired: boolean
+  modelFallbackAllowed: boolean
+  webFallbackAllowed: boolean
+  minimumEvidenceCount: number
+  minimumEvidenceScore: number
+  requireFreshData: boolean
+  maximumDataAgeSeconds?: number | null
+}
+
+type ProfileKind = 'retrieval' | 'answer'
+
+interface ProfileHistoryTarget {
+  kind: ProfileKind
+  id: string
+  name: string
+}
+
+interface ConfigurationDifference {
+  field: string
+  before: unknown
+  after: unknown
+}
+
+function compareConfigurations(before: Record<string, unknown>, after: Record<string, unknown>) {
+  // 使用稳定 JSON 串比较嵌套值，展示的是配置差异而不是对象引用差异。
+  const fields = new Set([...Object.keys(before), ...Object.keys(after)])
+  return [...fields]
+    .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+    .sort()
+    .map<ConfigurationDifference>((field) => ({ field, before: before[field], after: after[field] }))
+}
+
+function retrievalDraftFromRevision(revision: ProfileRevision): RetrievalProfileRevisionDraft {
+  // 配置快照来自后端不可变修订；复制只构造草稿，不会改写原版本。
+  const configuration = revision.configuration as {
+    collection_ids: string[]
+    top_k: number
+    minimum_score: number
+    vector_weight: number
+    lexical_weight: number
+    metadata_filters: Record<string, string | number | boolean>
+  }
+  return {
+    collectionIds: configuration.collection_ids,
+    topK: configuration.top_k,
+    minimumScore: configuration.minimum_score,
+    vectorWeight: configuration.vector_weight,
+    lexicalWeight: configuration.lexical_weight,
+    metadataFilters: configuration.metadata_filters
+  }
+}
+
+function answerDraftFromRevision(revision: ProfileRevision): AnswerProfileRevisionDraft | null {
+  // 回答草稿必须保留所钉住的检索修订，缺失该关系时宁可拒绝复制。
+  if (!revision.retrievalRevisionId) return null
+  const configuration = revision.configuration as {
+    system_prompt: string
+    output_schema: Record<string, unknown>
+    tool_codes: string[]
+    knowledge_required: boolean
+    model_fallback_allowed: boolean
+    web_fallback_allowed: boolean
+    minimum_evidence_count: number
+    minimum_evidence_score: number
+    require_fresh_data: boolean
+    maximum_data_age_seconds: number | null
+  }
+  return {
+    retrievalRevisionId: revision.retrievalRevisionId,
+    systemPrompt: configuration.system_prompt,
+    outputSchema: configuration.output_schema,
+    toolCodes: configuration.tool_codes,
+    knowledgeRequired: configuration.knowledge_required,
+    modelFallbackAllowed: configuration.model_fallback_allowed,
+    webFallbackAllowed: configuration.web_fallback_allowed,
+    minimumEvidenceCount: configuration.minimum_evidence_count,
+    minimumEvidenceScore: configuration.minimum_evidence_score,
+    requireFreshData: configuration.require_fresh_data,
+    maximumDataAgeSeconds: configuration.maximum_data_age_seconds
+  }
+}
+
 export default function IntelligencePage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const { applicationId, environmentId, application } = useApplicationContext()
   const [retrievalOpen, setRetrievalOpen] = useState(false)
   const [answerOpen, setAnswerOpen] = useState(false)
-  const [apiKey, setApiKey] = useState('')
   const [query, setQuery] = useState('')
   const [inputs, setInputs] = useState('{}')
   const [profileCode, setProfileCode] = useState('')
   const [result, setResult] = useState<AnswerResult | null>(null)
-  const [retrievalForm] = Form.useForm()
-  const [answerForm] = Form.useForm()
+  const [historyTarget, setHistoryTarget] = useState<ProfileHistoryTarget | null>(null)
+  const [comparisonRevisionIds, setComparisonRevisionIds] = useState<string[]>([])
+  const [editingRevision, setEditingRevision] = useState<ProfileRevision | null>(null)
+  const [draftConfiguration, setDraftConfiguration] = useState('')
+  const [retrievalForm] = Form.useForm<RetrievalProfileFormValues>()
+  const [answerForm] = Form.useForm<AnswerProfileFormValues>()
 
   const collections = useQuery({
     queryKey: ['collections', applicationId, environmentId],
@@ -58,16 +168,36 @@ export default function IntelligencePage() {
     queryKey: ['answer-profiles', applicationId, environmentId],
     queryFn: () => intelligenceApi.answerProfiles(applicationId, environmentId)
   })
+  const profileRevisions = useQuery({
+    queryKey: ['profile-revisions', applicationId, environmentId, historyTarget?.kind, historyTarget?.id],
+    queryFn: () =>
+      historyTarget?.kind === 'retrieval'
+        ? intelligenceApi.retrievalRevisions(applicationId, environmentId, historyTarget.id)
+        : intelligenceApi.answerRevisions(applicationId, environmentId, historyTarget!.id),
+    enabled: Boolean(historyTarget)
+  })
+  const profileReleases = useQuery({
+    queryKey: ['profile-releases', applicationId, environmentId, historyTarget?.id],
+    queryFn: () => intelligenceApi.profileReleases(applicationId, environmentId, historyTarget!.id),
+    enabled: Boolean(historyTarget)
+  })
 
   const createRetrieval = useMutation({
-    mutationFn: (values: Record<string, any>) => {
+    mutationFn: (values: RetrievalProfileFormValues) => {
       const metadataFilters = values.metadataFilters?.trim()
         ? JSON.parse(values.metadataFilters)
         : {}
-      return intelligenceApi.createRetrievalProfile(applicationId, environmentId, {
-        ...values,
+      const payload: RetrievalProfileCreateInput = {
+        code: values.code,
+        name: values.name,
+        collectionIds: values.collectionIds,
+        topK: values.topK,
+        minimumScore: values.minimumScore,
+        vectorWeight: values.vectorWeight,
+        lexicalWeight: values.lexicalWeight,
         metadataFilters
-      })
+      }
+      return intelligenceApi.createRetrievalProfile(applicationId, environmentId, payload)
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({
@@ -80,12 +210,23 @@ export default function IntelligencePage() {
     onError: (error) => message.error(asPlatformError(error).message)
   })
   const createAnswer = useMutation({
-    mutationFn: (values: Record<string, any>) => {
+    mutationFn: (values: AnswerProfileFormValues) => {
       const outputSchema = values.outputSchema?.trim() ? JSON.parse(values.outputSchema) : {}
-      return intelligenceApi.createAnswerProfile(applicationId, environmentId, {
-        ...values,
-        outputSchema
-      })
+      const payload: AnswerProfileCreateInput = {
+        code: values.code,
+        name: values.name,
+        retrievalProfileId: values.retrievalProfileId,
+        systemPrompt: values.systemPrompt ?? '',
+        outputSchema,
+        knowledgeRequired: values.knowledgeRequired,
+        modelFallbackAllowed: values.modelFallbackAllowed,
+        webFallbackAllowed: values.webFallbackAllowed,
+        minimumEvidenceCount: values.minimumEvidenceCount,
+        minimumEvidenceScore: values.minimumEvidenceScore,
+        requireFreshData: values.requireFreshData,
+        maximumDataAgeSeconds: values.maximumDataAgeSeconds
+      }
+      return intelligenceApi.createAnswerProfile(applicationId, environmentId, payload)
     },
     onSuccess: async (row) => {
       await queryClient.invalidateQueries({ queryKey: ['answer-profiles', applicationId, environmentId] })
@@ -104,16 +245,100 @@ export default function IntelligencePage() {
       } catch {
         throw new Error('临时上下文必须是合法 JSON')
       }
-      return intelligenceApi.answer(apiKey, {
-        profile: profileCode,
+      const profile = answerRows.find((item) => item.code === profileCode)
+      if (!profile) throw new Error('请选择当前环境中的回答策略')
+      const payload: AnswerDebugRequestInput = {
         query,
-        inputs: temporaryInputs,
-        options: { includeCitations: true, includeEvidence: true }
-      })
+        inputs: temporaryInputs
+      }
+      return intelligenceApi.debugAnswerProfile(applicationId, environmentId, profile.id, payload)
     },
     onSuccess: setResult,
     onError: (error) => message.error(asPlatformError(error).message)
   })
+  const copyRevisionAsDraft = useMutation({
+    mutationFn: (revision: ProfileRevision) => {
+      if (!historyTarget) throw new Error('请先选择策略')
+      if (historyTarget.kind === 'retrieval') {
+        return intelligenceApi.createRetrievalDraft(
+          applicationId,
+          environmentId,
+          historyTarget.id,
+          retrievalDraftFromRevision(revision)
+        )
+      }
+      const payload = answerDraftFromRevision(revision)
+      if (!payload) throw new Error('回答修订缺少检索版本引用，不能复制')
+      return intelligenceApi.createAnswerDraft(applicationId, environmentId, historyTarget.id, payload)
+    },
+    onSuccess: async () => {
+      await profileRevisions.refetch()
+      message.success('已创建新的草稿修订')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
+  })
+  const releaseRevision = useMutation({
+    mutationFn: ({ revision, action }: { revision: ProfileRevision; action: 'publish' | 'rollback' }) => {
+      if (!historyTarget) throw new Error('请先选择策略')
+      const api = historyTarget.kind === 'retrieval'
+        ? action === 'publish' ? intelligenceApi.publishRetrievalRevision : intelligenceApi.rollbackRetrievalRevision
+        : action === 'publish' ? intelligenceApi.publishAnswerRevision : intelligenceApi.rollbackAnswerRevision
+      return api(applicationId, environmentId, historyTarget.id, revision.id)
+    },
+    onSuccess: async () => {
+      await Promise.all([profileRevisions.refetch(), profileReleases.refetch()])
+      message.success('发布记录已追加')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
+  })
+  const updateDraft = useMutation({
+    mutationFn: () => {
+      if (!historyTarget || !editingRevision) throw new Error('请先选择草稿')
+      const parsed = JSON.parse(draftConfiguration) as Record<string, unknown>
+      if (historyTarget.kind === 'retrieval') {
+        return intelligenceApi.updateRetrievalDraft(
+          applicationId,
+          environmentId,
+          historyTarget.id,
+          editingRevision.id,
+          parsed as RetrievalProfileRevisionDraft
+        )
+      }
+      return intelligenceApi.updateAnswerDraft(
+        applicationId,
+        environmentId,
+        historyTarget.id,
+        editingRevision.id,
+        parsed as AnswerProfileRevisionDraft
+      )
+    },
+    onSuccess: async () => {
+      await profileRevisions.refetch()
+      setEditingRevision(null)
+      message.success('草稿已保存，尚未发布')
+    },
+    onError: (error) => message.error(asPlatformError(error).message)
+  })
+
+  const beginDraftEdit = (revision: ProfileRevision) => {
+    // 编辑器只展示接口允许提交的字段，策略编码和名称仍由主策略固定管理。
+    const payload = historyTarget?.kind === 'retrieval'
+      ? retrievalDraftFromRevision(revision)
+      : answerDraftFromRevision(revision)
+    if (!payload) {
+      message.error('该回答修订缺少检索版本引用，不能编辑')
+      return
+    }
+    setDraftConfiguration(JSON.stringify(payload, null, 2))
+    setEditingRevision(revision)
+  }
+
+  const comparedRevisions = (profileRevisions.data ?? []).filter((revision) =>
+    comparisonRevisionIds.includes(revision.id)
+  )
+  const configurationDifferences = comparedRevisions.length === 2
+    ? compareConfigurations(comparedRevisions[0].configuration, comparedRevisions[1].configuration)
+    : []
 
   if (collections.isLoading || retrievalProfiles.isLoading || answerProfiles.isLoading) {
     return <LoadingState rows={8} />
@@ -169,8 +394,8 @@ export default function IntelligencePage() {
                     <Alert
                       type="info"
                       showIcon
-                      message="API Key 只保存在本页内存"
-                      description="刷新或离开页面后会立即丢失，不会写入 localStorage。"
+                      message="调试使用管理员会话，不需要业务 API Key"
+                      description="控制面固定调用所选策略的已发布修订，并记录真实运行轨迹；浏览器不会接收或转发业务 Key。"
                     />
                     <label>
                       回答策略
@@ -179,14 +404,6 @@ export default function IntelligencePage() {
                         onChange={setProfileCode}
                         placeholder="选择回答策略"
                         options={answerRows.map((item) => ({ label: item.name, value: item.code }))}
-                      />
-                    </label>
-                    <label>
-                      当前环境 API Key
-                      <Input.Password
-                        value={apiKey}
-                        onChange={(event) => setApiKey(event.target.value)}
-                        placeholder="aik_test_..."
                       />
                     </label>
                     <label>
@@ -210,7 +427,7 @@ export default function IntelligencePage() {
                     <Button
                       type="primary"
                       loading={runAnswer.isPending}
-                      disabled={!apiKey || !query || !profileCode}
+                      disabled={!query || !profileCode}
                       onClick={() => runAnswer.mutate()}
                     >
                       运行回答测试
@@ -314,6 +531,14 @@ export default function IntelligencePage() {
                       <code>{item.code}</code>
                       <p>Top {item.topK} · 最低分 {item.minimumScore}</p>
                       <small>{item.collectionIds.length} 个知识集合</small>
+                      <div className="profile-card-actions">
+                        <Button
+                          size="small"
+                          onClick={() => setHistoryTarget({ kind: 'retrieval', id: item.id, name: item.name })}
+                        >
+                          版本与发布
+                        </Button>
+                      </div>
                     </Card>
                   ))}
                 </section>
@@ -335,6 +560,14 @@ export default function IntelligencePage() {
                         {item.knowledgeRequired ? '必须命中知识' : '知识优先'} ·{' '}
                         {item.modelFallbackAllowed ? '允许模型兜底' : '禁止无知识兜底'}
                       </p>
+                      <div className="profile-card-actions">
+                        <Button
+                          size="small"
+                          onClick={() => setHistoryTarget({ kind: 'answer', id: item.id, name: item.name })}
+                        >
+                          版本与发布
+                        </Button>
+                      </div>
                     </Card>
                   ))}
                 </section>
@@ -389,6 +622,174 @@ export default function IntelligencePage() {
             <Input.TextArea rows={3} spellCheck={false} placeholder='{"department":"engineering"}' />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={historyTarget ? `${historyTarget.name} · 版本与发布` : '版本与发布'}
+        open={Boolean(historyTarget)}
+        width={820}
+        footer={null}
+        onCancel={() => {
+          setHistoryTarget(null)
+          setComparisonRevisionIds([])
+        }}
+      >
+        {profileRevisions.isLoading || profileReleases.isLoading ? (
+          <LoadingState rows={4} />
+        ) : profileRevisions.error || profileReleases.error ? (
+          <ErrorState
+            message={asPlatformError(profileRevisions.error || profileReleases.error).message}
+            onRetry={() => Promise.all([profileRevisions.refetch(), profileReleases.refetch()])}
+          />
+        ) : (
+          <Space direction="vertical" size="middle" className="full-width">
+            <Alert
+              type="info"
+              showIcon
+              message="发布决定运行版本"
+              description="复制生成新草稿；发布和回滚都会追加不可变事件，不会覆写历史配置。"
+            />
+            <List
+              header={<strong>修订历史</strong>}
+              dataSource={profileRevisions.data ?? []}
+              locale={{ emptyText: '尚无修订' }}
+              renderItem={(revision) => (
+                <List.Item
+                  actions={[
+                    <Button
+                      key="copy"
+                      size="small"
+                      loading={copyRevisionAsDraft.isPending}
+                      onClick={() => copyRevisionAsDraft.mutate(revision)}
+                    >
+                      复制为草稿
+                    </Button>,
+                    revision.state === 'draft' ? (
+                      <Space key="draft-actions" size="small">
+                        <Button size="small" onClick={() => beginDraftEdit(revision)}>
+                          编辑草稿
+                        </Button>
+                        <Button
+                          size="small"
+                          type="primary"
+                          loading={releaseRevision.isPending}
+                          onClick={() => releaseRevision.mutate({ revision, action: 'publish' })}
+                        >
+                          发布
+                        </Button>
+                      </Space>
+                    ) : null,
+                    revision.state === 'published' ? (
+                      <Button
+                        key="rollback"
+                        size="small"
+                        loading={releaseRevision.isPending}
+                        onClick={() => releaseRevision.mutate({ revision, action: 'rollback' })}
+                      >
+                        回滚到此版本
+                      </Button>
+                    ) : null
+                  ].filter(Boolean)}
+                >
+                  <List.Item.Meta
+                    title={
+                      <Space>
+                        <span>修订 {revision.revision}</span>
+                        <StatusPill status={revision.state} />
+                        {revision.publishedAt ? <span className="muted">已发布</span> : null}
+                      </Space>
+                    }
+                    description={
+                      <Collapse
+                        ghost
+                        items={[
+                          {
+                            key: revision.id,
+                            label: '查看冻结配置',
+                            children: <pre>{JSON.stringify(revision.configuration, null, 2)}</pre>
+                          }
+                        ]}
+                      />
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+            <section className="revision-comparison">
+              <strong>配置差异比较</strong>
+              <p className="muted">选择两个修订，逐字段查看发布前后的实际变化。</p>
+              <Select
+                mode="multiple"
+                maxCount={2}
+                value={comparisonRevisionIds}
+                onChange={setComparisonRevisionIds}
+                placeholder="选择两个修订进行比较"
+                className="full-width"
+                options={(profileRevisions.data ?? []).map((revision) => ({
+                  label: `修订 ${revision.revision} · ${revision.state}`,
+                  value: revision.id
+                }))}
+              />
+              {comparedRevisions.length === 2 ? (
+                <List
+                  size="small"
+                  dataSource={configurationDifferences}
+                  locale={{ emptyText: '两个修订的冻结配置相同' }}
+                  renderItem={(difference) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        title={<code>{difference.field}</code>}
+                        description={
+                          <div className="revision-diff-values">
+                            <pre>{JSON.stringify(difference.before, null, 2)}</pre>
+                            <pre>{JSON.stringify(difference.after, null, 2)}</pre>
+                          </div>
+                        }
+                      />
+                    </List.Item>
+                  )}
+                />
+              ) : null}
+            </section>
+            <List
+              size="small"
+              header={<strong>发布事件</strong>}
+              dataSource={profileReleases.data ?? []}
+              locale={{ emptyText: '尚无发布事件' }}
+              renderItem={(event) => (
+                <List.Item>
+                  <span>
+                    {event.action} · 修订 {event.revisionId.slice(0, 8)} · {new Date(event.createdAt).toLocaleString()}
+                  </span>
+                </List.Item>
+              )}
+            />
+          </Space>
+        )}
+      </Modal>
+
+      <Modal
+        title={editingRevision ? `编辑草稿修订 ${editingRevision.revision}` : '编辑草稿'}
+        open={Boolean(editingRevision)}
+        width={760}
+        okText="保存草稿"
+        confirmLoading={updateDraft.isPending}
+        onOk={() => updateDraft.mutate()}
+        onCancel={() => setEditingRevision(null)}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="保存不等于发布"
+          description="此处只接受当前策略类型的生成契约字段；服务端会再次校验集合、检索修订与 JSON Schema。"
+        />
+        <Input.TextArea
+          value={draftConfiguration}
+          onChange={(event) => setDraftConfiguration(event.target.value)}
+          rows={20}
+          spellCheck={false}
+          className="revision-json-editor"
+        />
       </Modal>
 
       <Modal

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 
 from knowledge_core.shared.schema import ApiSchema
 
@@ -93,6 +93,45 @@ class DocumentView(ApiSchema):
     updated_at: datetime
 
 
+class DocumentRevisionView(ApiSchema):
+    """文档版本列表的安全视图；只公开状态和摘要，不返回原始对象存储路径。"""
+
+    id: UUID
+    document_id: UUID
+    version: int
+    content_hash: str
+    status: str
+    char_count: int
+    # SQLAlchemy Declarative 基类本身有 ``metadata`` 属性；从 ORM 对象校验时必须读取列属性
+    # ``metadata_``，但对外仍保持既有 camelCase/JSON 字段 ``metadata``。
+    metadata_: dict[str, Any] = Field(
+        # 路由先把 ORM 行转成 ``metadata`` JSON，FastAPI 校验响应模型时会再次读取该 JSON；
+        # 因此这里既接收 ORM 属性 ``metadata_``，也接收对外字段 ``metadata``。
+        validation_alias=AliasChoices("metadata_", "metadata"),
+        serialization_alias="metadata",
+    )
+    published_at: datetime | None
+    created_at: datetime
+
+
+class DocumentChunkView(ApiSchema):
+    """管理员片段预览视图，按已选版本返回文本与定位信息。"""
+
+    id: UUID
+    revision_id: UUID
+    chunk_index: int
+    content: str
+    page_number: int | None
+    section: str | None
+    token_count: int
+    # 片段与版本共享同名数据库列，使用同一别名规则避免把 SQLAlchemy 表元数据当作业务 JSON。
+    metadata_: dict[str, Any] = Field(
+        # 与版本视图保持一致，兼容 ORM 读取与 FastAPI 的二次响应校验。
+        validation_alias=AliasChoices("metadata_", "metadata"),
+        serialization_alias="metadata",
+    )
+
+
 class IngestionRunView(ApiSchema):
     id: UUID
     document_id: UUID
@@ -107,3 +146,17 @@ class IngestionRunView(ApiSchema):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+
+
+class DocumentIngestionQueuedResponse(ApiSchema):
+    """资料创建或修订已入队后的文档与入库任务快照。"""
+
+    document: DocumentView
+    ingestion_run: IngestionRunView
+
+
+class ArchiveResponse(ApiSchema):
+    """归档资料或集合后的最小确认信息，不暗示已物理删除对象。"""
+
+    archived: bool
+    id: str

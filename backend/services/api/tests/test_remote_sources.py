@@ -12,6 +12,13 @@ from knowledge_core.infrastructure.http_safety import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_private_address_policy(monkeypatch):
+    """为每个用例固定默认安全策略，避免本机开发环境开关改变拦截断言。"""
+    # 只有专门验证开发豁免的用例才可显式覆盖此值；其余测试必须默认拒绝非公网地址。
+    monkeypatch.setattr(http_safety.settings, "remote_allow_private_addresses", False)
+
+
 @pytest.fixture
 def allow_public_host(monkeypatch):
     async def allow(_hostname: str) -> None:

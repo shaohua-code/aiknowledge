@@ -64,7 +64,13 @@ def test_runtime_payload_cannot_override_application_context() -> None:
 
 
 def test_every_application_bound_table_has_context_columns() -> None:
-    global_tables = {"applications", "application_environments"}
+    # 平台目录和默认值是跨应用的资源池；只有引用它们的绑定和业务数据必须隔离到应用环境。
+    global_tables = {
+        "applications",
+        "application_environments",
+        "model_catalog_records",
+        "platform_model_default_records",
+    }
     for table in Base.metadata.tables.values():
         if table.name in global_tables:
             continue

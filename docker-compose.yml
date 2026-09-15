@@ -76,6 +76,22 @@ services:
       api:
         condition: service_healthy
 
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: services/worker/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    # Beat 只发布定时任务，实际 Outbox 消费仍由 maintenance 队列 Worker 完成。
+    command: celery -A knowledge_core.workers.celery_app beat --loglevel=info
+    depends_on:
+      api:
+        condition: service_healthy
+
   console:
     build:
       context: ./frontend

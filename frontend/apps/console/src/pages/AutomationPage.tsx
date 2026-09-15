@@ -3,6 +3,7 @@ import { Progress, Table } from 'antd'
 import { ErrorState, LoadingState, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
 import { knowledgeApi } from '@/api/platform'
+import { hasActiveIngestionRuns } from '@/features/knowledge/ingestionPolling'
 import { useApplicationContext } from '@/hooks/useApplicationContext'
 
 export default function AutomationPage() {
@@ -10,7 +11,8 @@ export default function AutomationPage() {
   const runs = useQuery({
     queryKey: ['ingestion-runs', applicationId, environmentId],
     queryFn: () => knowledgeApi.runs(applicationId, environmentId),
-    refetchInterval: 5000
+    // 终态列表不再无休止轮询；React Query 默认也会在页面不在前台时暂停轮询。
+    refetchInterval: (query) => hasActiveIngestionRuns(query.state.data ?? []) ? 5_000 : false
   })
   if (runs.isLoading) return <LoadingState rows={8} />
   if (runs.isError) {
@@ -28,14 +30,14 @@ export default function AutomationPage() {
   return (
     <div className="workspace-page">
       <PageHeader
-        eyebrow="数据自动化"
+        eyebrow="任务运行"
         title="所有后台处理都有状态、有阶段、有错误"
-        description="当前展示知识入库运行；定时数据源同步将在连接器能力启用后使用同一运行模型。"
+        description="当前展示知识入库任务；定时同步需要独立的调度定义、执行器和审计后才会作为自动化能力提供。"
       />
       <Table
         rowKey="id"
         dataSource={runs.data ?? []}
-        locale={{ emptyText: '还没有自动化运行记录' }}
+        locale={{ emptyText: '还没有任务运行记录' }}
         columns={[
           {
             title: '状态',
@@ -57,4 +59,3 @@ export default function AutomationPage() {
     </div>
   )
 }
-

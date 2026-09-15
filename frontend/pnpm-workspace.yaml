@@ -3,4 +3,9 @@ packages:
   - packages/*
 
 allowBuilds:
+  # Vite 在本机和 Docker 都依赖 esbuild 的平台二进制；显式放行其安装脚本。
   esbuild: true
+
+# 兼容 pnpm 10 的同类配置，避免旧构建环境忽略 esbuild 平台二进制。
+onlyBuiltDependencies:
+  - esbuild

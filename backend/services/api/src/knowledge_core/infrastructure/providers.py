@@ -6,12 +6,27 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
+from uuid import UUID
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from knowledge_core.config import settings
-from knowledge_core.infrastructure.model_configuration import get_model_configuration
+from knowledge_core.infrastructure.model_resolver import (
+    ResolvedModelConfig,
+    resolve_capability_config,
+    resolve_capability_config_async,
+)
 from knowledge_core.shared.errors import EmbeddingDimensionError, ProviderUnavailableError
+
+
+def _build_timeout(total: float) -> httpx.Timeout:
+    """构造分级超时：连接类故障 5 秒内快速失败，读取保留完整时长容纳大模型生成耗时。
+
+    扁平超时会让不可达端点阻塞满总时长（如 30s）才报错，
+    拆分 connect/pool 后，地址不可达在数秒内即抛出 ConnectTimeout。
+    """
+    return httpx.Timeout(total, connect=min(5.0, total), pool=min(5.0, total))
 
 
 class EmbeddingProvider(Protocol):
@@ -49,6 +64,19 @@ class WebSearchProvider(Protocol):
     async def search(self, query: str, *, limit: int = 5) -> list[WebSearchHit]: ...
 
 
+def embedding_space_fingerprint(provider: Any) -> str:
+    """生成不含密钥的 Embedding 空间标识，供入库和检索共享同一算法。"""
+    configuration = getattr(provider, "configuration", None)
+    payload = {
+        "provider": getattr(configuration, "provider", type(provider).__name__),
+        "model": getattr(configuration, "model", settings.embedding_model),
+        "baseUrl": getattr(configuration, "base_url", "local"),
+        "dimension": settings.embedding_dimension,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class LocalHashEmbeddingProvider:
     """仅用于开发和测试的确定性向量。
 
@@ -71,30 +99,47 @@ class LocalHashEmbeddingProvider:
 
 
 class OpenAICompatibleEmbeddingProvider:
+    def __init__(self, configuration: ResolvedModelConfig) -> None:
+        self.configuration = configuration
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        configuration = get_model_configuration()
-        if not configuration.embedding_api_key:
+        configuration = self.configuration
+        if not configuration.api_key:
             raise ProviderUnavailableError(
                 "Embedding Provider 尚未配置",
                 suggestion="请在平台环境中配置 EMBEDDING_API_KEY",
             )
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{configuration.embedding_base_url.rstrip('/')}/embeddings",
-                headers={"Authorization": f"Bearer {configuration.embedding_api_key}"},
-                # 显式指定输出维度，避免 Provider 默认维度与数据库 1536 维列不一致
-                json={
-                    "model": configuration.embedding_model,
-                    "input": texts,
-                    "dimensions": settings.embedding_dimension,
-                },
-            )
+        # 网络层异常（超时、连接失败等）统一归一化为 Provider 不可用，避免冒泡成 500
+        try:
+            async with httpx.AsyncClient(timeout=_build_timeout(30)) as client:
+                response = await client.post(
+                    f"{configuration.base_url.rstrip('/')}/embeddings",
+                    headers={"Authorization": f"Bearer {configuration.api_key}"},
+                    # 显式指定输出维度，避免 Provider 默认维度与数据库 1536 维列不一致
+                    json={
+                        "model": configuration.model,
+                        "input": texts,
+                        "dimensions": settings.embedding_dimension,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(
+                "Embedding Provider 连接失败",
+                details={"upstream": f"{type(exc).__name__}: {exc}"},
+            ) from exc
         if response.status_code >= 400:
             raise ProviderUnavailableError(
                 "Embedding Provider 调用失败",
                 details={"statusCode": response.status_code},
             )
-        data = response.json().get("data", [])
+        # 上游异常时可能返回 HTML 错误页等非 JSON 内容，解析失败同样归为 Provider 不可用
+        try:
+            data = response.json().get("data", [])
+        except json.JSONDecodeError as exc:
+            raise ProviderUnavailableError(
+                "Embedding Provider 返回了非 JSON 内容",
+                details={"upstream": response.text[:200]},
+            ) from exc
         vectors = [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
         if len(vectors) != len(texts):
             raise ProviderUnavailableError("Embedding Provider 返回数量与输入不一致")
@@ -126,32 +171,50 @@ class DisabledChatProvider:
 
 
 class OpenAICompatibleChatProvider:
+    def __init__(self, configuration: ResolvedModelConfig) -> None:
+        self.configuration = configuration
+
     @property
     def available(self) -> bool:
-        configuration = get_model_configuration()
-        return bool(configuration.chat_api_key and configuration.chat_model)
+        return bool(self.configuration.api_key and self.configuration.model)
 
     async def generate(self, messages: list[dict[str, str]]) -> ChatResult:
-        configuration = get_model_configuration()
+        configuration = self.configuration
         if not self.available:
             raise ProviderUnavailableError("Chat Provider 尚未配置")
-        async with httpx.AsyncClient(timeout=settings.answer_timeout_seconds) as client:
-            response = await client.post(
-                f"{configuration.chat_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {configuration.chat_api_key}"},
-                json={
-                    "model": configuration.chat_model,
-                    "messages": messages,
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
-            )
+        # 网络层异常（超时、连接失败等）统一归一化为 Provider 不可用，避免冒泡成 500
+        try:
+            async with httpx.AsyncClient(
+                timeout=_build_timeout(settings.answer_timeout_seconds)
+            ) as client:
+                response = await client.post(
+                    f"{configuration.base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {configuration.api_key}"},
+                    json={
+                        "model": configuration.model,
+                        "messages": messages,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(
+                "Chat Provider 连接失败",
+                details={"upstream": f"{type(exc).__name__}: {exc}"},
+            ) from exc
         if response.status_code >= 400:
             raise ProviderUnavailableError(
                 "Chat Provider 调用失败",
                 details={"statusCode": response.status_code},
             )
-        payload = response.json()
+        # 上游异常时可能返回 HTML 错误页等非 JSON 内容，解析失败同样归为 Provider 不可用
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise ProviderUnavailableError(
+                "Chat Provider 返回了非 JSON 内容",
+                details={"upstream": response.text[:200]},
+            ) from exc
         try:
             content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -174,29 +237,46 @@ class DisabledWebSearchProvider:
 
 
 class SerperWebSearchProvider:
+    def __init__(self, configuration: ResolvedModelConfig) -> None:
+        self.configuration = configuration
+
     @property
     def available(self) -> bool:
-        return bool(get_model_configuration().web_search_api_key)
+        return bool(self.configuration.api_key)
 
     async def search(self, query: str, *, limit: int = 5) -> list[WebSearchHit]:
-        configuration = get_model_configuration()
+        configuration = self.configuration
         if not self.available:
             raise ProviderUnavailableError("联网搜索 Provider 尚未配置")
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                f"{configuration.web_search_base_url.rstrip('/')}/search",
-                headers={
-                    "X-API-KEY": configuration.web_search_api_key,
-                    "Content-Type": "application/json",
-                },
-                json={"q": query, "num": limit},
-            )
+        # 网络层异常（超时、连接失败等）统一归一化为 Provider 不可用，避免冒泡成 500
+        try:
+            async with httpx.AsyncClient(timeout=_build_timeout(10)) as client:
+                response = await client.post(
+                    f"{configuration.base_url.rstrip('/')}/search",
+                    headers={
+                        "X-API-KEY": configuration.api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={"q": query, "num": limit},
+                )
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(
+                "联网搜索连接失败",
+                details={"upstream": f"{type(exc).__name__}: {exc}"},
+            ) from exc
         if response.status_code >= 400:
             raise ProviderUnavailableError(
                 "联网搜索调用失败",
                 details={"statusCode": response.status_code},
             )
-        rows = response.json().get("organic") or []
+        # serper 异常时可能返回 HTML 错误页等非 JSON 内容，解析失败同样归为 Provider 不可用
+        try:
+            rows = response.json().get("organic") or []
+        except json.JSONDecodeError as exc:
+            raise ProviderUnavailableError(
+                "联网搜索返回了非 JSON 内容",
+                details={"upstream": response.text[:200]},
+            ) from exc
         return [
             WebSearchHit(
                 document_id=None,
@@ -210,29 +290,66 @@ class SerperWebSearchProvider:
         ]
 
 
-def get_embedding_provider() -> EmbeddingProvider:
-    configuration = get_model_configuration()
-    if configuration.embedding_provider == "local_hash":
+def get_embedding_provider(application_id: UUID | str | None = None) -> EmbeddingProvider:
+    configuration = resolve_capability_config(application_id, "embedding")
+    if configuration.provider == "local_hash":
         return LocalHashEmbeddingProvider()
-    if configuration.embedding_provider in {"openai", "openai_compatible"}:
-        return OpenAICompatibleEmbeddingProvider()
+    if configuration.provider in {"openai", "openai_compatible"}:
+        return OpenAICompatibleEmbeddingProvider(configuration)
     raise ProviderUnavailableError(
-        f"不支持的 Embedding Provider：{configuration.embedding_provider}"
+        f"不支持的 Embedding Provider：{configuration.provider}"
     )
 
 
-def get_chat_provider() -> ChatProvider:
-    configuration = get_model_configuration()
-    if configuration.chat_provider == "disabled":
-        return DisabledChatProvider()
-    if configuration.chat_provider in {"openai", "openai_compatible"}:
-        return OpenAICompatibleChatProvider()
+def get_chat_provider(application_id: UUID | str | None = None) -> ChatProvider:
+    configuration = resolve_capability_config(application_id, "chat")
+    if configuration.provider in {"openai", "openai_compatible"}:
+        return OpenAICompatibleChatProvider(configuration)
     return DisabledChatProvider()
 
 
-def get_web_search_provider() -> WebSearchProvider:
-    if get_model_configuration().web_search_provider == "serper":
-        return SerperWebSearchProvider()
+def get_web_search_provider(application_id: UUID | str | None = None) -> WebSearchProvider:
+    configuration = resolve_capability_config(application_id, "web_search")
+    if configuration.provider == "serper":
+        return SerperWebSearchProvider(configuration)
+    return DisabledWebSearchProvider()
+
+
+async def get_embedding_provider_async(
+    session: AsyncSession, application_id: UUID | str | None, environment_id: UUID | str | None
+) -> EmbeddingProvider:
+    """按数据库优先配置创建向量 Provider；未回填时保留旧配置回退。"""
+    configuration = await resolve_capability_config_async(
+        session, application_id, environment_id, "embedding"
+    )
+    if configuration.provider == "local_hash":
+        return LocalHashEmbeddingProvider()
+    if configuration.provider in {"openai", "openai_compatible"}:
+        return OpenAICompatibleEmbeddingProvider(configuration)
+    raise ProviderUnavailableError(f"不支持的 Embedding Provider：{configuration.provider}")
+
+
+async def get_chat_provider_async(
+    session: AsyncSession, application_id: UUID | str | None, environment_id: UUID | str | None
+) -> ChatProvider:
+    """按数据库优先配置创建聊天 Provider；未配置时保持禁用 Provider 语义。"""
+    configuration = await resolve_capability_config_async(
+        session, application_id, environment_id, "chat"
+    )
+    if configuration.provider in {"openai", "openai_compatible"}:
+        return OpenAICompatibleChatProvider(configuration)
+    return DisabledChatProvider()
+
+
+async def get_web_search_provider_async(
+    session: AsyncSession, application_id: UUID | str | None, environment_id: UUID | str | None
+) -> WebSearchProvider:
+    """按数据库优先配置创建联网 Provider；未配置时保持禁用 Provider 语义。"""
+    configuration = await resolve_capability_config_async(
+        session, application_id, environment_id, "web_search"
+    )
+    if configuration.provider == "serper":
+        return SerperWebSearchProvider(configuration)
     return DisabledWebSearchProvider()
 
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "维护 AI 知识中台"
+  short_description: "用 --更新 同步项目重写需求、前后端架构、实施状态与修改记录"
+  default_prompt: "使用 $maintain-ai-knowledge 核对当前任务并同步 PRD、前后端架构和修改记录。 --更新"
+policy:
+  allow_implicit_invocation: false

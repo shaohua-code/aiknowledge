@@ -18,7 +18,11 @@ from knowledge_core.infrastructure.http_safety import (
     fetch_public_source,
     validate_remote_request,
 )
-from knowledge_core.infrastructure.models import DocumentRevision, KnowledgeCollection
+from knowledge_core.infrastructure.models import Document, DocumentRevision, KnowledgeCollection
+from knowledge_core.infrastructure.providers import (
+    embedding_space_fingerprint,
+    get_embedding_provider_async,
+)
 from knowledge_core.infrastructure.storage import storage
 from knowledge_core.shared.context import ApplicationContext
 from knowledge_core.shared.errors import ConflictError, NotFoundError, ProviderUnavailableError
@@ -230,6 +234,7 @@ class KnowledgeService:
             progress=0,
             request_id=get_request_id(),
         )
+        await self._record_ingestion_event(run, application_id, environment_id)
         if document.current_version is None:
             document.status = "queued"
         await self.session.commit()
@@ -315,6 +320,7 @@ class KnowledgeService:
             progress=0,
             request_id=get_request_id(),
         )
+        await self._record_ingestion_event(run, application_id, environment_id)
         document.mime_type = mime_type
         await self.session.commit()
         await self.session.refresh(run)
@@ -407,6 +413,7 @@ class KnowledgeService:
             progress=0,
             request_id=get_request_id(),
         )
+        await self._record_ingestion_event(run, application_id, environment_id)
         await self.session.commit()
         await self.session.refresh(document)
         await self.session.refresh(run)
@@ -428,6 +435,9 @@ class KnowledgeService:
         run.completed_at = None
         run.retry_count += 1
         run.request_id = get_request_id()
+        # 已发布的旧事件不能再次被派发；每次人工重试都在同一事务新建投递意图，
+        # 这样即使 Celery 此刻不可用，后续扫描也能恢复本次重试。
+        await self._record_ingestion_event(run, application_id, environment_id)
         await self.session.commit()
         self._enqueue(run.id, application_id, environment_id)
         return run
@@ -460,6 +470,55 @@ class KnowledgeService:
         )
         await self.session.commit()
 
+    async def rollback_document_revision(
+        self,
+        application_id: UUID,
+        environment_id: UUID,
+        document_id: UUID,
+        revision_id: UUID,
+        *,
+        actor: str,
+    ) -> Document:
+        """回滚到已发布版本并记录审计；历史版本和对象存储文件继续保留。"""
+        context = ApplicationContext(
+            application_id=application_id,
+            environment_id=environment_id,
+            application_code="control",
+            environment_code="control",
+            api_key_id=UUID(int=0),
+            scopes=frozenset(),
+        )
+        document = await self.repository.get_document(context, document_id)
+        if not document:
+            raise NotFoundError("文档不存在")
+        revision = await self.repository.get_document_revision(
+            application_id, environment_id, document_id, revision_id
+        )
+        if not revision:
+            raise NotFoundError("文档版本不存在")
+        embedding_provider = await get_embedding_provider_async(
+            self.session, application_id, environment_id
+        )
+        await self.repository.rollback_revision(
+            context,
+            document,
+            revision,
+            current_embedding_fingerprint=embedding_space_fingerprint(embedding_provider),
+        )
+        await self.repository.create_audit_event(
+            application_id=application_id,
+            environment_id=environment_id,
+            actor=actor,
+            action="document.revision_rolled_back",
+            resource_type="document_revision",
+            resource_id=revision.id,
+            request_id=get_request_id(),
+            details={"documentId": str(document.id), "version": revision.version},
+        )
+        await self.session.commit()
+        await self.session.refresh(document)
+        return document
+
     async def archive_collection(
         self, application_id: UUID, environment_id: UUID, collection_id: UUID, *, actor: str
     ) -> None:
@@ -483,12 +542,28 @@ class KnowledgeService:
 
     def _enqueue(self, run_id: UUID, application_id: UUID, environment_id: UUID) -> None:
         try:
-            from knowledge_core.workers.tasks import ingest_document
+            from knowledge_core.workers.tasks import dispatch_outbox
 
-            ingest_document.delay(str(run_id), str(application_id), str(environment_id))
+            # Outbox 已包含具体任务载荷；此处只触发派发器，失败后消息仍可恢复。
+            dispatch_outbox.delay()
         except Exception as exc:
             raise ProviderUnavailableError(
                 "文档已保存，但任务队列暂不可用",
                 details={"runId": str(run_id)},
                 suggestion="恢复 Worker 与 Redis 后重新提交该入库任务",
             ) from exc
+
+    async def _record_ingestion_event(
+        self, run, application_id: UUID, environment_id: UUID
+    ) -> None:
+        """将 Celery 投递意图写入同一事务，供后续派发器可靠重试。"""
+        await self.repository.create_outbox_event(
+            application_id=application_id,
+            environment_id=environment_id,
+            topic="knowledge.ingest_document",
+            payload={
+                "runId": str(run.id),
+                "applicationId": str(application_id),
+                "environmentId": str(environment_id),
+            },
+        )

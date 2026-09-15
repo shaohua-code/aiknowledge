@@ -62,6 +62,12 @@ class ProviderUnavailableError(CoreError):
     retryable = True
 
 
+class PlatformError(CoreError):
+    code = "PLATFORM_CONFIGURATION_ERROR"
+    title = "平台模型配置错误"
+    http_status = 502
+
+
 class EmbeddingDimensionError(CoreError):
     code = "EMBEDDING_DIMENSION_MISMATCH"
     title = "Embedding 维度与知识库不匹配"

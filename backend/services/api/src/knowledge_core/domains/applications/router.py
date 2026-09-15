@@ -11,6 +11,7 @@ from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.applications.schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
+    ApiKeyRevocationResponse,
     ApiKeyView,
     ApplicationCreate,
     ApplicationUpdate,
@@ -22,6 +23,7 @@ from knowledge_core.domains.applications.service import ApplicationService
 from knowledge_core.infrastructure.database import get_session
 from knowledge_core.shared.errors import NotFoundError
 from knowledge_core.shared.response import success
+from knowledge_core.shared.schema import ApiSuccess
 
 router = APIRouter(
     prefix="/control/v1/applications",
@@ -31,22 +33,30 @@ router = APIRouter(
 
 
 async def _view(repository: ApplicationRepository, app) -> dict:
+    """组装应用和环境的完整读取视图，保证公开 Schema 的必填字段实际存在。"""
     environments = await repository.list_environments(app.id)
-    data = ApplicationView.model_validate(app).model_dump(by_alias=True)
-    data["environments"] = [
-        EnvironmentView.model_validate(item).model_dump(by_alias=True) for item in environments
-    ]
-    return data
+    view = ApplicationView(
+        id=app.id,
+        code=app.code,
+        name=app.name,
+        description=app.description,
+        application_type=app.application_type,
+        status=app.status,
+        created_at=app.created_at,
+        updated_at=app.updated_at,
+        environments=[EnvironmentView.model_validate(item) for item in environments],
+    )
+    return view.model_dump(by_alias=True)
 
 
-@router.get("")
+@router.get("", response_model=ApiSuccess[list[ApplicationView]])
 async def list_applications(session: Annotated[AsyncSession, Depends(get_session)]) -> dict:
     repository = ApplicationRepository(session)
     applications = await repository.list_applications()
     return success([await _view(repository, app) for app in applications])
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=ApiSuccess[ApplicationView])
 async def create_application(
     payload: ApplicationCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -56,7 +66,7 @@ async def create_application(
     return success(await _view(service.repository, app))
 
 
-@router.get("/{application_id}")
+@router.get("/{application_id}", response_model=ApiSuccess[ApplicationView])
 async def get_application(
     application_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -68,7 +78,7 @@ async def get_application(
     return success(await _view(repository, app))
 
 
-@router.patch("/{application_id}")
+@router.patch("/{application_id}", response_model=ApiSuccess[ApplicationView])
 async def update_application(
     application_id: UUID,
     payload: ApplicationUpdate,
@@ -79,7 +89,10 @@ async def update_application(
     return success(await _view(service.repository, app))
 
 
-@router.patch("/{application_id}/environments/{environment_id}")
+@router.patch(
+    "/{application_id}/environments/{environment_id}",
+    response_model=ApiSuccess[EnvironmentView],
+)
 async def update_environment(
     application_id: UUID,
     environment_id: UUID,
@@ -97,7 +110,10 @@ async def update_environment(
     return success(EnvironmentView.model_validate(environment).model_dump(by_alias=True))
 
 
-@router.get("/{application_id}/environments/{environment_id}/api-keys")
+@router.get(
+    "/{application_id}/environments/{environment_id}/api-keys",
+    response_model=ApiSuccess[list[ApiKeyView]],
+)
 async def list_api_keys(
     application_id: UUID,
     environment_id: UUID,
@@ -110,7 +126,11 @@ async def list_api_keys(
     return success([ApiKeyView.model_validate(key).model_dump(by_alias=True) for key in keys])
 
 
-@router.post("/{application_id}/environments/{environment_id}/api-keys", status_code=201)
+@router.post(
+    "/{application_id}/environments/{environment_id}/api-keys",
+    status_code=201,
+    response_model=ApiSuccess[ApiKeyCreated],
+)
 async def create_api_key(
     application_id: UUID,
     environment_id: UUID,
@@ -128,7 +148,10 @@ async def create_api_key(
     return success(data)
 
 
-@router.delete("/{application_id}/environments/{environment_id}/api-keys/{key_id}")
+@router.delete(
+    "/{application_id}/environments/{environment_id}/api-keys/{key_id}",
+    response_model=ApiSuccess[ApiKeyRevocationResponse],
+)
 async def revoke_api_key(
     application_id: UUID,
     environment_id: UUID,

@@ -1,3 +1,4 @@
+// 轻量线性图标集合，统一描边参数并避免页面直接散落 SVG 路径。
 type IconName =
   | 'apps'
   | 'layers'

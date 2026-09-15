@@ -1,3 +1,4 @@
+// 品牌标记只负责无障碍隐藏的几何图形，尺寸由外层品牌样式控制。
 export default function BrandMark({ large = false }: { large?: boolean }) {
   return (
     <span className={`brand-mark ${large ? 'large' : ''}`} aria-hidden="true">

@@ -3,7 +3,8 @@ import { Button, Progress } from 'antd'
 import { Link } from 'react-router-dom'
 import { ErrorState, LoadingState, MetricCard, PageHeader, StatusPill } from '@aik/ui'
 import { asPlatformError } from '@/api/client'
-import { knowledgeApi, operationApi } from '@/api/platform'
+import { intelligenceApi, knowledgeApi, operationApi } from '@/api/platform'
+import { buildApplicationActions } from '@/features/applications/applicationActions'
 import { useApplicationContext } from '@/hooks/useApplicationContext'
 
 export default function ApplicationOverviewPage() {
@@ -19,6 +20,10 @@ export default function ApplicationOverviewPage() {
   const runs = useQuery({
     queryKey: ['ingestion-runs', applicationId, environmentId],
     queryFn: () => knowledgeApi.runs(applicationId, environmentId)
+  })
+  const answerProfiles = useQuery({
+    queryKey: ['answer-profiles', applicationId, environmentId],
+    queryFn: () => intelligenceApi.answerProfiles(applicationId, environmentId)
   })
 
   if (summary.isLoading || collections.isLoading || runs.isLoading) return <LoadingState rows={8} />
@@ -40,6 +45,13 @@ export default function ApplicationOverviewPage() {
   const ingestionRuns = runs.data ?? []
   const failures = ingestionRuns.filter((item) => item.status === 'failed')
   const base = `/applications/${applicationId}/${environmentId}`
+  // 行动项只来自真实接口返回的资源状态，避免用“健康分数”掩盖尚未接入的能力。
+  const nextActions = buildApplicationActions({
+    collectionCount: knowledge.length,
+    failedRunCount: failures.length,
+    answerProfileCount: answerProfiles.data?.length,
+    totalRequestCount: metrics.totalRequests
+  })
 
   return (
     <div className="workspace-page">
@@ -61,19 +73,52 @@ export default function ApplicationOverviewPage() {
         />
         <MetricCard
           label="调用成功率"
-          value={`${Math.round(metrics.successRate * 100)}%`}
-          helper={`共 ${metrics.totalRequests} 次请求`}
+          // 没有完成请求时服务端返回 null，概览不能把未观测状态伪装为 100%。
+          value={metrics.successRate == null ? '无数据' : `${Math.round(metrics.successRate * 100)}%`}
+          helper={`共 ${metrics.totalRequests} 次请求，其中已完成 ${metrics.completedRequests} 次`}
         />
         <MetricCard
           label="平均响应"
-          value={`${metrics.averageDurationMs} ms`}
+          value={metrics.averageDurationMs == null ? '无数据' : `${metrics.averageDurationMs} ms`}
           helper="检索与回答综合耗时"
         />
         <MetricCard
           label="模型兜底率"
-          value={`${Math.round(metrics.modelFallbackRate * 100)}%`}
+          value={metrics.modelFallbackRate == null ? '无数据' : `${Math.round(metrics.modelFallbackRate * 100)}%`}
           helper="知识未命中后使用通用能力"
         />
+      </section>
+
+      <section className="panel-card action-workbench" aria-labelledby="action-workbench-title">
+        <div className="section-heading compact">
+          <div>
+            <span className="aik-eyebrow">NEXT ACTIONS</span>
+            <h2 id="action-workbench-title">下一步工作台</h2>
+          </div>
+          <span className="action-workbench-count">{nextActions.length} 项待处理</span>
+        </div>
+        {nextActions.length === 0 ? (
+          <div className="inline-success">
+            <span>✓</span>
+            <div>
+              <strong>当前没有需要立即处理的事项</strong>
+              <p>继续关注运行记录和知识变更，新的失败或接入缺口会显示在这里。</p>
+            </div>
+          </div>
+        ) : (
+          <div className="action-workbench-list">
+            {nextActions.map((action, index) => (
+              <Link className="action-workbench-item" key={action.key} to={`${base}/${action.path}`}>
+                <span className="action-workbench-index">{String(index + 1).padStart(2, '0')}</span>
+                <span>
+                  <strong>{action.title}</strong>
+                  <small>{action.description}</small>
+                </span>
+                <span aria-hidden="true">→</span>
+              </Link>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="overview-grid">
@@ -156,4 +201,3 @@ export default function ApplicationOverviewPage() {
     </div>
   )
 }
-

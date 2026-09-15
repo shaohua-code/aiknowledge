@@ -79,6 +79,7 @@ export default function ConsoleShell() {
               工作台
             </NavLink>
             <NavLink to="/applications">AI 应用</NavLink>
+            <NavLink to="/models">模型管理</NavLink>
             <NavLink to="/guide">操作指南</NavLink>
           </nav>
           <Space size="small" className="console-actions">
@@ -112,6 +113,7 @@ export default function ConsoleShell() {
               items: [
                 { key: 'home', label: <Link to="/">工作台</Link> },
                 { key: 'applications', label: <Link to="/applications">AI 应用</Link> },
+                { key: 'models', label: <Link to="/models">模型管理</Link> },
                 { key: 'guide', label: <Link to="/guide">操作指南</Link> }
               ]
             }}

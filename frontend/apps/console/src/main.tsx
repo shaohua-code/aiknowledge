@@ -1,4 +1,5 @@
 import React from 'react'
+// 应用入口集中配置中文界面、全局主题、查询缓存和路由错误边界。
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App as AntApp, ConfigProvider } from 'antd'

@@ -14,7 +14,10 @@ from knowledge_core.infrastructure.models import (
     DocumentRevision,
     KnowledgeCollection,
 )
-from knowledge_core.infrastructure.providers import get_embedding_provider
+from knowledge_core.infrastructure.providers import (
+    embedding_space_fingerprint,
+    get_embedding_provider_async,
+)
 from knowledge_core.shared.context import ApplicationContext
 from knowledge_core.shared.errors import NotFoundError, ProviderUnavailableError
 
@@ -46,9 +49,12 @@ class RetrievalService:
         *,
         top_k: int | None = None,
     ) -> tuple[list[RetrievalHit], object]:
-        profile = await self.repository.get_retrieval_profile_by_code(context, profile_code)
+        # 运行面只接受最近一次发布事件指向的快照，草稿不可被 API Key 直接调用。
+        profile = await self.repository.get_published_retrieval_profile_by_code(
+            context, profile_code
+        )
         if not profile:
-            raise NotFoundError("检索策略不存在或未启用")
+            raise NotFoundError("检索策略不存在、未启用或尚未发布")
         hits = await self.search(context, profile, query, top_k=top_k)
         return hits, profile
 
@@ -119,12 +125,19 @@ class RetrievalService:
 
         vector_rows = []
         try:
-            query_vector = (await get_embedding_provider().embed([query]))[0]
+            embedding_provider = await get_embedding_provider_async(
+                self.session, context.application_id, context.environment_id
+            )
+            embedding_fingerprint = embedding_space_fingerprint(embedding_provider)
+            query_vector = (await embedding_provider.embed([query]))[0]
             vector_expression = 1 - DocumentChunk.embedding.cosine_distance(query_vector)
             vector_rows = list(
                 (
                     await self.session.execute(
-                        joined.add_columns(vector_expression.label("vector_score"))
+                        joined.where(
+                            DocumentRevision.embedding_fingerprint == embedding_fingerprint
+                        )
+                        .add_columns(vector_expression.label("vector_score"))
                         .where(DocumentChunk.embedding.is_not(None))
                         .order_by(vector_expression.desc())
                         .limit(limit * 3)

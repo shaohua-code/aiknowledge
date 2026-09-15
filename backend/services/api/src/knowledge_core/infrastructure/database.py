@@ -1,3 +1,5 @@
+"""集中创建异步 SQLAlchemy 基础模型、引擎和请求级数据库会话。"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

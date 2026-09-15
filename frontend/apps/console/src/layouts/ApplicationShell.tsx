@@ -9,7 +9,9 @@ const navigation = [
   ['overview', '概览', '了解应用健康和下一步动作'],
   ['knowledge', '知识中心', '集合、文档和版本'],
   ['intelligence', 'AI 能力', '检索、回答策略和测试'],
-  ['automation', '数据自动化', '入库与同步运行'],
+  ['evaluations', '质量评测', '固定样本与发布门禁'],
+  // 当前只具备异步入库运行记录，尚无调度定义与执行器，导航不能称为“自动化”。
+  ['automation', '任务运行', '入库任务与处理进度'],
   ['developer', '开发者接入', 'API Key 和接口示例'],
   ['operations', '运行与质量', '请求、错误和成本'],
   ['settings', '设置', '应用边界与环境']
@@ -37,8 +39,12 @@ export default function ApplicationShell() {
     return <ErrorState title="应用环境不存在" message="该应用环境不存在或已经被移除。" />
   }
 
-  const section = location.pathname.split('/').at(-1) || 'overview'
   const base = `/applications/${application.id}/${environment.id}`
+  // 通过当前应用根路径匹配一级导航，详情页继续停留在所属模块，不能再依赖 URL 最后一段。
+  const activeNavigation = navigation.find(([path]) =>
+    location.pathname === `${base}/${path}` || location.pathname.startsWith(`${base}/${path}/`)
+  )
+  const section = activeNavigation?.[0] ?? 'overview'
 
   return (
     <div className="application-workspace">

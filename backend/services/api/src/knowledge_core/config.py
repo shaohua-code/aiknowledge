@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     answer_timeout_seconds: int = 15
     max_evidence: int = 8
     request_body_retention_days: int = 0
+    # 未被任一文档或版本引用的对象须等待观察窗口结束后才可清理。
+    orphan_object_retention_hours: int = 168
     remote_fetch_timeout_seconds: int = 20
     remote_fetch_max_bytes: int = 20 * 1024 * 1024
     remote_fetch_max_redirects: int = 5

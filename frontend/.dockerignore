@@ -1,0 +1,6 @@
+# 容器必须自行生成依赖链接，不能复制主机 node_modules 或构建缓存。
+node_modules
+**/node_modules
+**/dist
+**/.vite
+console-build.log

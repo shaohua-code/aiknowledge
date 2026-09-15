@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -16,17 +18,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from knowledge_core import __version__
 from knowledge_core.config import settings
 from knowledge_core.control.auth import router as session_router
+from knowledge_core.control.model_catalog import router as model_catalog_router
 from knowledge_core.control.model_configuration import router as model_configuration_router
 from knowledge_core.domains.applications.router import router as applications_router
+from knowledge_core.domains.evaluations.router import router as evaluations_router
 from knowledge_core.domains.intelligence.control_router import router as intelligence_control_router
 from knowledge_core.domains.knowledge.router import router as knowledge_router
 from knowledge_core.domains.operations.router import router as operations_router
 from knowledge_core.infrastructure.database import engine
-from knowledge_core.infrastructure.model_configuration import get_model_configuration
+from knowledge_core.infrastructure.model_configuration import (
+    ModelConfiguration,
+    get_model_configuration,
+)
+from knowledge_core.runtime.rate_limit import close_rate_limit_redis
 from knowledge_core.runtime.router import router as runtime_router
 from knowledge_core.shared.errors import CoreError
 from knowledge_core.shared.request_id import new_request_id, set_request_id
 from knowledge_core.shared.response import failure
+from knowledge_core.shared.schema import ApiSchema
 from knowledge_core.workers.celery_app import celery_app
 
 logging.basicConfig(
@@ -35,10 +44,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger("knowledge_core")
 
+
+class HealthResponse(ApiSchema):
+    """API 进程存活摘要；只表示进程可响应，不等同于依赖已就绪。"""
+
+    status: Literal["ok"]
+    service: str
+    version: str
+
+
+class ReadinessCheck(ApiSchema):
+    """单项就绪检查的安全状态，不承诺 Provider 已完成真实连通性调用。"""
+
+    status: Literal["ok", "degraded", "error", "configured", "unconfigured", "development"]
+
+
+class ReadinessResponse(ApiSchema):
+    """服务依赖就绪摘要；基础依赖不可用时仍以 503 返回完整诊断体。"""
+
+    status: Literal["ok", "degraded"]
+    ready: bool
+    checks: dict[str, ReadinessCheck]
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """管理进程级资源，确保共享的运行面限流连接池能在关闭时回收。"""
+    try:
+        yield
+    finally:
+        await close_rate_limit_redis()
+
+
 app = FastAPI(
     title=settings.app_name,
     version=__version__,
     description="面向 AI 应用的知识、检索、回答与运行治理底座",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -104,8 +146,8 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     return JSONResponse(status_code=500, content=failure(error))
 
 
-@app.get("/health", tags=["平台健康"])
-async def health() -> dict:
+@app.get("/health", tags=["平台健康"], response_model=HealthResponse)
+async def health() -> HealthResponse:
     return {"status": "ok", "service": "api", "version": __version__}
 
 
@@ -123,7 +165,38 @@ async def _check_worker() -> bool:
     return await asyncio.to_thread(ping)
 
 
-@app.get("/ready", tags=["平台健康"])
+def _provider_configuration_checks(configuration: ModelConfiguration) -> dict[str, dict[str, str]]:
+    """返回凭证配置状态，不把未实际调用的 Provider 标识成可用。"""
+    return {
+        "chatProvider": {
+            "status": "configured"
+            if configuration.chat_provider != "disabled" and configuration.chat_api_key
+            else "unconfigured"
+        },
+        "embeddingProvider": {
+            # local_hash 是明确仅限开发的本地实现，不代表外部向量服务健康。
+            "status": "development"
+            if configuration.embedding_provider == "local_hash"
+            else (
+                "configured"
+                if configuration.embedding_api_key
+                else "unconfigured"
+            )
+        },
+        "searchProvider": {
+            "status": "configured"
+            if configuration.web_search_provider != "disabled" and configuration.web_search_api_key
+            else "unconfigured"
+        },
+    }
+
+
+@app.get(
+    "/ready",
+    tags=["平台健康"],
+    response_model=ReadinessResponse,
+    responses={503: {"model": ReadinessResponse}},
+)
 async def ready() -> JSONResponse:
     model_configuration = get_model_configuration()
     checks: dict[str, dict[str, str]] = {}
@@ -144,17 +217,8 @@ async def ready() -> JSONResponse:
         await redis.aclose()
 
     checks["worker"] = {"status": "ok" if await _check_worker() else "degraded"}
-    checks["chatProvider"] = {
-        "status": "ok" if model_configuration.chat_provider != "disabled" else "unconfigured"
-    }
-    checks["embeddingProvider"] = {
-        "status": "development" if model_configuration.embedding_provider == "local_hash" else "ok"
-    }
-    checks["searchProvider"] = {
-        "status": "unconfigured"
-        if model_configuration.web_search_provider == "disabled"
-        else ("ok" if model_configuration.web_search_api_key else "error")
-    }
+    # Provider 状态是安全配置摘要；最近真实连通性需由管理员测试接口单独触发和记录。
+    checks.update(_provider_configuration_checks(model_configuration))
     core_ready = checks["database"]["status"] == "ok" and checks["redis"]["status"] == "ok"
     overall = "ok" if core_ready and checks["worker"]["status"] == "ok" else "degraded"
     return JSONResponse(
@@ -165,9 +229,11 @@ async def ready() -> JSONResponse:
 
 app.include_router(session_router)
 app.include_router(model_configuration_router)
+app.include_router(model_catalog_router)
 app.include_router(applications_router)
 app.include_router(knowledge_router)
 app.include_router(intelligence_control_router)
+app.include_router(evaluations_router)
 app.include_router(operations_router)
 app.include_router(runtime_router)
 

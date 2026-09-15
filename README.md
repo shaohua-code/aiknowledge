@@ -2,7 +2,9 @@
 
 面向 AI 简历、AI 基金及后续 AI 应用的统一知识、检索、回答和运行治理平台。
 
-当前需求基线为 [docs/PRD.md](docs/PRD.md)。前后端代码已经分离：
+全新 V1 的项目价值、PRD、前后端架构、视觉、审计、Skill、进度与修改记录全部见 [项目重写执行书](docs/项目重写执行书.md)。后续模型从第 0 节接手，第 25 节查看进度，第 27 节规定所有第一方代码必须有中文注释。
+
+当前运行版本的历史需求参考为 [docs/PRD.md](docs/PRD.md)，不限制新产品设计。前后端代码已经分离：
 
 - `frontend/`：React 管理控制台、共享 UI、TypeScript 契约和 Nginx 配置。
 - `backend/`：FastAPI、Celery Worker、数据库迁移、PostgreSQL 初始化和后端脚本。
@@ -25,6 +27,21 @@
 
 3. 打开管理控制台：`http://localhost:5173`。
 4. API 文档：`http://localhost:8000/docs`。
+
+## 更新代码后的部署核验
+
+`/health` 只证明正在运行的服务可用，不能证明容器已加载当前工作区代码。后端路由、迁移或前端产物发生变化后，在具备 Docker CLI 的主机按以下顺序执行：
+
+```powershell
+# 重建 API、Worker、Scheduler 与控制台镜像；api 启动命令会自动执行 alembic upgrade head。
+docker compose up -d --build api worker scheduler console
+
+# 确认容器健康后，检查当前运行 API 的公开契约，而不是只检查源码中的 OpenAPI。
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8000/openapi.json
+```
+
+验证时应确认新端点或字段已出现在运行时 OpenAPI；若缺失，检查实际执行命令、镜像构建上下文和容器日志。不要为刷新代码删除 PostgreSQL、Redis 或对象存储 volume；迁移失败时先保留现有数据和日志，再按迁移记录定位问题。
 
 ## 本地开发
 

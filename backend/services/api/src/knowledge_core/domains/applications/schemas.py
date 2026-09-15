@@ -44,7 +44,8 @@ class ApplicationView(ApiSchema):
     status: str
     created_at: datetime
     updated_at: datetime
-    environments: list[EnvironmentView] = Field(default_factory=list)
+    # 应用读取接口始终由服务层附带环境列表，公开契约不应把该字段降级为可选。
+    environments: list[EnvironmentView]
 
 
 class ApiKeyCreate(ApiSchema):
@@ -75,3 +76,10 @@ class ApiKeyView(ApiSchema):
 
 class ApiKeyCreated(ApiKeyView):
     secret: str
+
+
+class ApiKeyRevocationResponse(ApiSchema):
+    """撤销 API Key 后返回的最小确认信息，不泄露已撤销凭据。"""
+
+    revoked: bool
+    id: str

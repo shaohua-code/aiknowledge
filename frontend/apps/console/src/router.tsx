@@ -1,4 +1,5 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
+// 路由按平台范围与应用环境范围分层，页面模块保持懒加载并复用统一壳层。
 import ConsoleShell from '@/layouts/ConsoleShell'
 import ApplicationShell from '@/layouts/ApplicationShell'
 import RouteErrorPage from '@/pages/RouteErrorPage'
@@ -23,6 +24,10 @@ export const router = createBrowserRouter(
           lazy: async () => ({ Component: (await import('@/pages/ApplicationsPage')).default })
         },
         {
+          path: 'models',
+          lazy: async () => ({ Component: (await import('@/pages/ModelCatalogPage')).default })
+        },
+        {
           path: 'guide',
           lazy: async () => ({ Component: (await import('@/pages/GuidePage')).default })
         },
@@ -42,6 +47,10 @@ export const router = createBrowserRouter(
             {
               path: 'intelligence',
               lazy: async () => ({ Component: (await import('@/pages/IntelligencePage')).default })
+            },
+            {
+              path: 'evaluations',
+              lazy: async () => ({ Component: (await import('@/pages/EvaluationsPage')).default })
             },
             {
               path: 'automation',

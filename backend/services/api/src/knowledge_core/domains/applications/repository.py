@@ -1,3 +1,5 @@
+"""应用、环境和业务 API Key 的数据库访问边界，所有读取按应用归属校验。"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

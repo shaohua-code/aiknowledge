@@ -8,23 +8,16 @@ import pytest
 
 from knowledge_core.config import settings
 from knowledge_core.infrastructure import providers
-from knowledge_core.infrastructure.model_configuration import ModelConfiguration
+from knowledge_core.infrastructure.model_resolver import ResolvedModelConfig
 from knowledge_core.shared.errors import EmbeddingDimensionError
 
 
-def _configuration() -> ModelConfiguration:
-    return ModelConfiguration(
-        chat_provider="disabled",
-        chat_model="",
-        chat_base_url="https://provider.example/v1",
-        chat_api_key="",
-        embedding_provider="openai_compatible",
-        embedding_model="embedding-test",
-        embedding_base_url="https://provider.example/v1",
-        embedding_api_key="test-key",
-        web_search_provider="disabled",
-        web_search_base_url="https://provider.example",
-        web_search_api_key="",
+def _configuration() -> ResolvedModelConfig:
+    return ResolvedModelConfig(
+        provider="openai_compatible",
+        model="embedding-test",
+        base_url="https://provider.example/v1",
+        api_key="test-key",
     )
 
 
@@ -47,14 +40,15 @@ def _patch_provider(monkeypatch: pytest.MonkeyPatch, dimension: int) -> list[dic
     monkeypatch.setattr(
         providers.httpx, "AsyncClient", partial(httpx.AsyncClient, transport=transport)
     )
-    monkeypatch.setattr(providers, "get_model_configuration", _configuration)
     return requests
 
 
 @pytest.mark.asyncio
 async def test_embed_requests_database_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = _patch_provider(monkeypatch, settings.embedding_dimension)
-    vectors = await providers.OpenAICompatibleEmbeddingProvider().embed(["测试文本"])
+    vectors = await providers.OpenAICompatibleEmbeddingProvider(_configuration()).embed(
+        ["测试文本"]
+    )
     assert len(vectors[0]) == settings.embedding_dimension
     assert requests[0]["dimensions"] == settings.embedding_dimension
 
@@ -63,6 +57,6 @@ async def test_embed_requests_database_dimension(monkeypatch: pytest.MonkeyPatch
 async def test_embed_rejects_mismatched_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_provider(monkeypatch, settings.embedding_dimension - 512)
     with pytest.raises(EmbeddingDimensionError) as captured:
-        await providers.OpenAICompatibleEmbeddingProvider().embed(["测试文本"])
+        await providers.OpenAICompatibleEmbeddingProvider(_configuration()).embed(["测试文本"])
     assert captured.value.code == "EMBEDDING_DIMENSION_MISMATCH"
     assert "维" in captured.value.message

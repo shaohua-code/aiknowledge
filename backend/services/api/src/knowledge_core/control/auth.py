@@ -10,7 +10,7 @@ from pydantic import Field
 from knowledge_core.config import settings
 from knowledge_core.shared.errors import AuthenticationError
 from knowledge_core.shared.response import success
-from knowledge_core.shared.schema import ApiSchema
+from knowledge_core.shared.schema import ApiSchema, ApiSuccess
 
 router = APIRouter(prefix="/control/v1/session", tags=["控制面会话"])
 _serializer = URLSafeTimedSerializer(settings.session_secret, salt="aik-admin-session-v2")
@@ -19,6 +19,19 @@ _serializer = URLSafeTimedSerializer(settings.session_secret, salt="aik-admin-se
 class LoginRequest(ApiSchema):
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+$")
     password: str
+
+
+class AdminSessionResponse(ApiSchema):
+    """已认证管理员会话的安全视图，Cookie 本体不会出现在 JSON 中。"""
+
+    email: str
+    role: str
+
+
+class LogoutResponse(ApiSchema):
+    """清除管理员会话 Cookie 后的最小确认信息。"""
+
+    logged_out: bool
 
 
 def _verify_session(token: str) -> str:
@@ -39,7 +52,7 @@ async def require_admin(
     return _verify_session(session_token)
 
 
-@router.post("/login")
+@router.post("/login", response_model=ApiSuccess[AdminSessionResponse])
 async def login(payload: LoginRequest, response: Response) -> dict:
     if not settings.admin_password:
         raise AuthenticationError(
@@ -64,12 +77,12 @@ async def login(payload: LoginRequest, response: Response) -> dict:
     return success({"email": settings.admin_email, "role": "admin"})
 
 
-@router.get("/me")
+@router.get("/me", response_model=ApiSuccess[AdminSessionResponse])
 async def me(email: Annotated[str, Depends(require_admin)]) -> dict:
     return success({"email": email, "role": "admin"})
 
 
-@router.delete("")
+@router.delete("", response_model=ApiSuccess[LogoutResponse])
 async def logout(response: Response) -> dict:
     response.delete_cookie(settings.session_cookie_name, path="/")
     return success({"loggedOut": True})
