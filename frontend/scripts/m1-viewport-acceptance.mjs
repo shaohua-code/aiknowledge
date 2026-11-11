@@ -17,8 +17,8 @@
 import { execFile } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -56,16 +56,27 @@ async function assertConsoleReachable() {
  */
 async function captureWithPlaywright(pagePath) {
   let playwright
-  try {
-    playwright = await import('playwright')
-  } catch {
+  const candidates = [
+    'playwright',
+    'playwright-core',
+    process.env.PLAYWRIGHT_CORE_PATH,
+    '/tmp/node_modules/playwright-core/index.js'
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    const specifier = candidate.startsWith('/') ? pathToFileURL(candidate).href : candidate
     try {
-      // 允许只用 playwright-core 搭配本机 Chrome，不必再下载浏览器。
-      playwright = await import('playwright-core')
+      const imported = await import(specifier)
+      // playwright-core 的 ESM 入口把浏览器放在 default 上。
+      const resolved = imported.default?.chromium?.launch ? imported.default : imported
+      if (typeof resolved?.chromium?.launch === 'function') {
+        playwright = resolved
+        break
+      }
     } catch {
-      return false
+      playwright = undefined
     }
   }
+  if (!playwright) return false
   const browser = await playwright.chromium.launch({
     channel: 'chrome',
     headless: true
@@ -73,7 +84,9 @@ async function captureWithPlaywright(pagePath) {
   try {
     for (const viewport of VIEWPORTS) {
       const page = await browser.newPage({ viewport })
-      await page.goto(`${baseUrl}${pagePath}`, { waitUntil: 'networkidle' })
+      await page.goto(`${baseUrl}${pagePath}`, { waitUntil: 'domcontentloaded' })
+      // 等到登录按钮出现。文案是「进入平台」，不能在空白背景上截图。
+      await page.getByRole('button', { name: '进入平台' }).waitFor({ timeout: 15000 })
       const file = path.join(outputDir, `login-${viewport.name}.png`)
       await page.screenshot({ path: file, fullPage: true })
       await page.close()
@@ -96,6 +109,8 @@ async function captureWithChrome(pagePath) {
       '--disable-gpu',
       '--hide-scrollbars',
       '--no-sandbox',
+      '--virtual-time-budget=8000',
+      '--timeout=8000',
       `--window-size=${viewport.width},${viewport.height}`,
       `--screenshot=${file}`,
       `${baseUrl}${pagePath}`

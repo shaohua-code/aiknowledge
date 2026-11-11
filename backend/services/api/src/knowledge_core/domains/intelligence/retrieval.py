@@ -89,6 +89,7 @@ class RetrievalService:
         """
         self.session = session
         self.repository = IntelligenceRepository(session)
+        self.last_metrics: RAGMetrics | None = None
 
     async def search_by_code(
         self,
@@ -121,7 +122,7 @@ class RetrievalService:
         )
         if not profile:
             raise NotFoundError("检索策略不存在、未启用或尚未发布")
-        hits, metrics = await self.search(
+        hits, metrics = await self._search(
             context, profile, query, top_k=top_k, collect_metrics=collect_metrics
         )
         return hits, profile, metrics
@@ -134,23 +135,32 @@ class RetrievalService:
         *,
         top_k: int | None = None,
         collect_metrics: bool = False,
-    ) -> tuple[list[RetrievalHit], RAGMetrics | None]:
+    ) -> list[RetrievalHit]:
         """执行检索。
+
+        返回值保持为命中列表，避免运行面和既有测试被指标元组破坏。
+        需要指标时使用 search_by_code，或把 collect_metrics 的结果放在 last_metrics。
 
         支持 RAG 增强：
         - Query Rewriting：将用户查询改写为更适合检索的形式
         - Reranking：使用更精确的模型对检索结果重排序
-
-        Args:
-            context: 应用上下文
-            profile: 检索策略对象
-            query: 用户查询
-            top_k: 返回结果数量限制
-            collect_metrics: 是否收集 RAG 指标
-
-        Returns:
-            (检索结果列表, RAG 指标或 None)
         """
+        hits, metrics = await self._search(
+            context, profile, query, top_k=top_k, collect_metrics=collect_metrics
+        )
+        self.last_metrics = metrics
+        return hits
+
+    async def _search(
+        self,
+        context: ApplicationContext,
+        profile,
+        query: str,
+        *,
+        top_k: int | None = None,
+        collect_metrics: bool = False,
+    ) -> tuple[list[RetrievalHit], RAGMetrics | None]:
+        """执行检索并可选返回 RAG 指标。"""
         metrics = RAGMetrics() if collect_metrics else None
         start_time = datetime.now(UTC)
 
