@@ -208,7 +208,10 @@ class TestChunkingStrategies:
     def test_chunk_text_uses_config_strategy(self) -> None:
         """chunk_text 应根据配置选择策略。"""
         # 使用足够长的文本以满足 min_chars 要求
-        text = "这是一段测试文本，需要足够长才能通过最小字符数限制。\n\n这是另一段落，同样需要足够长。"
+        text = (
+            "这是一段测试文本，需要足够长才能通过最小字符数限制。"
+            "\n\n这是另一段落，同样需要足够长。"
+        )
 
         # 固定大小策略，设置较小的 min_chars
         config_fixed = RAGEnhancementConfig(

@@ -276,8 +276,41 @@ def normalize_text(value: str) -> str:
 
 
 def chunk_blocks(
-    blocks: list[ParsedBlock], *, target_chars: int = 1200, overlap_chars: int = 180
+    blocks: list[ParsedBlock],
+    *,
+    target_chars: int = 1200,
+    overlap_chars: int = 180,
+    chunking_strategy: str | None = None,
 ) -> list[dict]:
+    """将解析后的文档块切分为检索片段。
+
+    支持可配置的分块策略（通过 chunking_strategy 参数）：
+    - None 或 "fixed_size"：固定字符数分块（默认，向后兼容）
+    - "paragraph"：按段落分块
+    - "sentence"：按句子分块
+
+    Args:
+        blocks: 解析后的文档块列表
+        target_chars: 目标字符数（默认 1200）
+        overlap_chars: 重叠字符数（默认 180，仅 fixed_size 策略使用）
+        chunking_strategy: 分块策略，可选值见上
+
+    Returns:
+        片段字典列表，每个字典包含 chunk_index、content、page_number、section 等
+
+    Raises:
+        ValueError: 文档清洗和切割后没有有效内容
+    """
+    # 显式策略才进入 RAG 分块；缺省和 fixed_size 继续走原来的固定字符切分。
+    if chunking_strategy and chunking_strategy != "fixed_size":
+        return _chunk_blocks_with_strategy(
+            blocks,
+            chunking_strategy,
+            target_chars,
+            overlap_chars,
+        )
+
+    # 默认固定字符数分块（向后兼容）
     chunks: list[dict] = []
     for block in blocks:
         text = normalize_text(block.text)
@@ -305,6 +338,114 @@ def chunk_blocks(
             chunks.append(_chunk_dict(buffer, block, len(chunks)))
     if not chunks:
         raise ValueError("文档清洗和切割后没有有效内容")
+    return chunks
+
+
+def resolve_chunking_options(metadata: dict | None) -> tuple[str | None, int, int]:
+    """从文档版本 metadata 读取分块开关。
+
+    未配置或策略为 fixed_size 时返回 (None, 1200, 180)，入库继续使用原切分。
+    支持顶层 chunkingStrategy，以及 rag.chunking.strategy / targetChars / overlapChars。
+    """
+    default_target = 1200
+    default_overlap = 180
+    if not isinstance(metadata, dict):
+        return None, default_target, default_overlap
+    rag = metadata.get("rag") if isinstance(metadata.get("rag"), dict) else {}
+    chunking = rag.get("chunking") if isinstance(rag.get("chunking"), dict) else {}
+    raw_strategy = metadata.get("chunkingStrategy") or chunking.get("strategy")
+    if not isinstance(raw_strategy, str) or raw_strategy.strip() in {"", "fixed_size"}:
+        strategy = None
+    else:
+        strategy = raw_strategy.strip()
+    raw_target = chunking.get("targetChars", metadata.get("chunkTargetChars", default_target))
+    raw_overlap = chunking.get("overlapChars", metadata.get("chunkOverlapChars", default_overlap))
+    try:
+        target_chars = int(raw_target)
+        overlap_chars = int(raw_overlap)
+    except (TypeError, ValueError):
+        return strategy, default_target, default_overlap
+    if target_chars < 50:
+        target_chars = default_target
+    if overlap_chars < 0:
+        overlap_chars = default_overlap
+    return strategy, target_chars, overlap_chars
+
+
+def _chunk_blocks_with_strategy(
+    blocks: list[ParsedBlock],
+    strategy: str,
+    target_chars: int,
+    overlap_chars: int,
+) -> list[dict]:
+    """使用 RAG 增强的分块策略处理文档块。
+
+    策略把短文本全部滤掉时回退为保留原文，避免短文档入库失败。
+
+    Args:
+        blocks: 解析后的文档块列表
+        strategy: 分块策略（paragraph、sentence、semantic）
+        target_chars: 目标字符数
+        overlap_chars: 重叠字符数，仅在回退到固定切分时使用
+
+    Returns:
+        片段字典列表
+    """
+    from knowledge_core.domains.intelligence.rag_enhancements import (
+        ChunkingStrategy,
+        RAGEnhancementConfig,
+        chunk_by_fixed_size,
+        chunk_text,
+    )
+
+    try:
+        chunking_strategy = ChunkingStrategy(strategy)
+    except ValueError:
+        # 未知策略名回退到固定大小，不让配置笔误中断入库。
+        chunking_strategy = ChunkingStrategy.FIXED_SIZE
+
+    config = RAGEnhancementConfig(
+        chunking_strategy=chunking_strategy,
+        chunk_target_chars=target_chars,
+        chunk_overlap_chars=overlap_chars,
+        # 入库不能因为策略的默认最小长度丢掉段尾。切分仍由目标长度控制。
+        chunk_min_chars=1,
+    )
+
+    chunks: list[dict] = []
+    chunk_index = 0
+
+    for block in blocks:
+        text = normalize_text(block.text)
+        if not text:
+            continue
+
+        text_chunks = chunk_text(text, config)
+        if not text_chunks:
+            # 段落/句子策略有最小长度。短文档达不到时保留全文，而不是拒绝入库。
+            text_chunks = chunk_by_fixed_size(
+                text,
+                target_chars=target_chars,
+                overlap_chars=overlap_chars,
+                min_chars=1,
+            ) or [text]
+
+        for chunk_text_content in text_chunks:
+            chunks.append(
+                {
+                    "chunk_index": chunk_index,
+                    "content": chunk_text_content,
+                    "page_number": block.page_number,
+                    "section": block.section,
+                    "token_count": max(1, len(chunk_text_content) // 3),
+                    "metadata_": {},
+                }
+            )
+            chunk_index += 1
+
+    if not chunks:
+        raise ValueError("文档清洗和切割后没有有效内容")
+
     return chunks
 
 

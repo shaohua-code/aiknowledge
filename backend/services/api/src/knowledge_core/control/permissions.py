@@ -23,10 +23,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import wraps
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID
 
 
@@ -97,69 +98,73 @@ class Role(Enum):
 # 角色权限映射
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.PLATFORM_ADMIN: frozenset(Permission),  # 所有权限
-
-    Role.PLATFORM_READONLY: frozenset([
-        Permission.APPLICATION_READ,
-        Permission.ENVIRONMENT_READ,
-        Permission.KNOWLEDGE_READ,
-        Permission.PROFILE_READ,
-        Permission.EVALUATION_READ,
-        Permission.OPERATIONS_READ,
-        Permission.MODEL_READ,
-    ]),
-
-    Role.APPLICATION_OWNER: frozenset([
-        Permission.APPLICATION_READ,
-        Permission.APPLICATION_WRITE,
-        Permission.ENVIRONMENT_READ,
-        Permission.ENVIRONMENT_WRITE,
-        Permission.ENVIRONMENT_DELETE,
-        Permission.API_KEY_READ,
-        Permission.API_KEY_WRITE,
-        Permission.API_KEY_REVOKE,
-        Permission.KNOWLEDGE_READ,
-        Permission.KNOWLEDGE_WRITE,
-        Permission.KNOWLEDGE_DELETE,
-        Permission.KNOWLEDGE_ARCHIVE,
-        Permission.PROFILE_READ,
-        Permission.PROFILE_WRITE,
-        Permission.PROFILE_PUBLISH,
-        Permission.PROFILE_ROLLBACK,
-        Permission.EVALUATION_READ,
-        Permission.EVALUATION_WRITE,
-        Permission.EVALUATION_RUN,
-        Permission.OPERATIONS_READ,
-        Permission.OPERATIONS_EXPORT,
-        Permission.MODEL_READ,
-        Permission.MODEL_WRITE,
-    ]),
-
-    Role.APPLICATION_MAINTAINER: frozenset([
-        Permission.APPLICATION_READ,
-        Permission.ENVIRONMENT_READ,
-        Permission.KNOWLEDGE_READ,
-        Permission.KNOWLEDGE_WRITE,
-        Permission.KNOWLEDGE_ARCHIVE,
-        Permission.PROFILE_READ,
-        Permission.PROFILE_WRITE,
-        Permission.PROFILE_PUBLISH,
-        Permission.PROFILE_ROLLBACK,
-        Permission.EVALUATION_READ,
-        Permission.EVALUATION_WRITE,
-        Permission.EVALUATION_RUN,
-        Permission.OPERATIONS_READ,
-        Permission.MODEL_READ,
-    ]),
-
-    Role.APPLICATION_READONLY: frozenset([
-        Permission.APPLICATION_READ,
-        Permission.ENVIRONMENT_READ,
-        Permission.KNOWLEDGE_READ,
-        Permission.PROFILE_READ,
-        Permission.EVALUATION_READ,
-        Permission.OPERATIONS_READ,
-        Permission.MODEL_READ,
-    ]),
+    Role.PLATFORM_READONLY: frozenset(
+        [
+            Permission.APPLICATION_READ,
+            Permission.ENVIRONMENT_READ,
+            Permission.KNOWLEDGE_READ,
+            Permission.PROFILE_READ,
+            Permission.EVALUATION_READ,
+            Permission.OPERATIONS_READ,
+            Permission.MODEL_READ,
+        ]
+    ),
+    Role.APPLICATION_OWNER: frozenset(
+        [
+            Permission.APPLICATION_READ,
+            Permission.APPLICATION_WRITE,
+            Permission.ENVIRONMENT_READ,
+            Permission.ENVIRONMENT_WRITE,
+            Permission.ENVIRONMENT_DELETE,
+            Permission.API_KEY_READ,
+            Permission.API_KEY_WRITE,
+            Permission.API_KEY_REVOKE,
+            Permission.KNOWLEDGE_READ,
+            Permission.KNOWLEDGE_WRITE,
+            Permission.KNOWLEDGE_DELETE,
+            Permission.KNOWLEDGE_ARCHIVE,
+            Permission.PROFILE_READ,
+            Permission.PROFILE_WRITE,
+            Permission.PROFILE_PUBLISH,
+            Permission.PROFILE_ROLLBACK,
+            Permission.EVALUATION_READ,
+            Permission.EVALUATION_WRITE,
+            Permission.EVALUATION_RUN,
+            Permission.OPERATIONS_READ,
+            Permission.OPERATIONS_EXPORT,
+            Permission.MODEL_READ,
+            Permission.MODEL_WRITE,
+        ]
+    ),
+    Role.APPLICATION_MAINTAINER: frozenset(
+        [
+            Permission.APPLICATION_READ,
+            Permission.ENVIRONMENT_READ,
+            Permission.KNOWLEDGE_READ,
+            Permission.KNOWLEDGE_WRITE,
+            Permission.KNOWLEDGE_ARCHIVE,
+            Permission.PROFILE_READ,
+            Permission.PROFILE_WRITE,
+            Permission.PROFILE_PUBLISH,
+            Permission.PROFILE_ROLLBACK,
+            Permission.EVALUATION_READ,
+            Permission.EVALUATION_WRITE,
+            Permission.EVALUATION_RUN,
+            Permission.OPERATIONS_READ,
+            Permission.MODEL_READ,
+        ]
+    ),
+    Role.APPLICATION_READONLY: frozenset(
+        [
+            Permission.APPLICATION_READ,
+            Permission.ENVIRONMENT_READ,
+            Permission.KNOWLEDGE_READ,
+            Permission.PROFILE_READ,
+            Permission.EVALUATION_READ,
+            Permission.OPERATIONS_READ,
+            Permission.MODEL_READ,
+        ]
+    ),
 }
 
 
@@ -238,10 +243,7 @@ def has_any_permission(
     application_id: UUID | None = None,
 ) -> bool:
     """检查用户是否具有任一权限。"""
-    return any(
-        has_permission(user, p, application_id)
-        for p in permissions
-    )
+    return any(has_permission(user, p, application_id) for p in permissions)
 
 
 def has_all_permissions(
@@ -250,10 +252,7 @@ def has_all_permissions(
     application_id: UUID | None = None,
 ) -> bool:
     """检查用户是否具有所有权限。"""
-    return all(
-        has_permission(user, p, application_id)
-        for p in permissions
-    )
+    return all(has_permission(user, p, application_id) for p in permissions)
 
 
 class PermissionError(Exception):
@@ -291,6 +290,7 @@ def require_permission(
         async def publish_profile(ctx, profile_id, ...):
             ...
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -314,7 +314,9 @@ def require_permission(
                 raise PermissionError(permission)
 
             return await func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
@@ -343,6 +345,7 @@ class RoleAssignment:
         if self.expires_at is None:
             return False
         from datetime import datetime
+
         return datetime.fromisoformat(self.expires_at) < datetime.now()
 
 
@@ -352,7 +355,7 @@ def get_role_description(role: Role) -> str:
         Role.PLATFORM_ADMIN: "平台管理员：拥有所有权限，可管理所有应用和平台配置",
         Role.PLATFORM_READONLY: "平台只读：可查看所有应用的基本信息，但不能修改",
         Role.APPLICATION_OWNER: "应用所有者：完全管理指定应用，包括环境、密钥、发布和删除",
-        Role.APPLICATION_MAINTAINER: "应用维护者：维护应用的知识、策略和评测，不能管理密钥或删除应用",
+        Role.APPLICATION_MAINTAINER: "应用维护者：维护知识、策略和评测，不能管理密钥或删除应用",
         Role.APPLICATION_READONLY: "应用只读：查看应用的运行指标和发布记录，不能修改任何配置",
     }
     return descriptions.get(role, role.value)

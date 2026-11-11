@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol
 
 
-class ChunkingStrategy(str, Enum):
+class ChunkingStrategy(StrEnum):
     """分块策略枚举。
 
     FIXED_SIZE: 固定字符数分块（默认，向后兼容）

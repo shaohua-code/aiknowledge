@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from knowledge_core.domains.intelligence.streaming import (
     StreamEventType,
     StreamingAnswerBuilder,

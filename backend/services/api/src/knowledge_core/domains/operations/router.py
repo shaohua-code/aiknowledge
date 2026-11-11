@@ -7,7 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.operations.repository import OperationRepository
 from knowledge_core.domains.operations.schemas import (
@@ -27,7 +28,12 @@ from knowledge_core.shared.schema import ApiSuccess
 router = APIRouter(
     prefix="/control/v1/applications/{application_id}/environments/{environment_id}",
     tags=["运行与质量"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(
+            require_control_permission(Permission.OPERATIONS_READ, Permission.OPERATIONS_EXPORT)
+        ),
+    ],
 )
 
 

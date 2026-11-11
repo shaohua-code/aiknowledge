@@ -5,7 +5,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends
 from pydantic import Field, HttpUrl
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.infrastructure.model_configuration import (
     get_model_configuration,
     model_configuration_view,
@@ -18,7 +19,10 @@ from knowledge_core.shared.schema import ApiSchema, ApiSnakeCaseSchema, ApiSucce
 router = APIRouter(
     prefix="/control/v1/platform/model-configuration",
     tags=["平台模型配置"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_control_permission(Permission.MODEL_READ, Permission.MODEL_WRITE)),
+    ],
 )
 
 

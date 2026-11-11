@@ -14,7 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from knowledge_core.config import settings
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.infrastructure.database import get_session
 from knowledge_core.infrastructure.models import Document, DocumentRevision, IdempotencyRecord
 from knowledge_core.infrastructure.storage import storage
@@ -24,7 +25,15 @@ from knowledge_core.shared.schema import ApiSchema, ApiSuccess
 router = APIRouter(
     prefix="/control/v1/maintenance",
     tags=["平台维护"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(
+            require_control_permission(
+                Permission.PLATFORM_MAINTENANCE,
+                Permission.PLATFORM_MAINTENANCE,
+            )
+        ),
+    ],
 )
 
 

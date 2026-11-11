@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.evaluations.repository import EvaluationRepository
 from knowledge_core.domains.evaluations.schemas import (
@@ -33,7 +34,12 @@ from knowledge_core.shared.schema import ApiSuccess
 router = APIRouter(
     prefix="/control/v1/applications/{application_id}/environments/{environment_id}/evaluations",
     tags=["质量评测"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(
+            require_control_permission(Permission.EVALUATION_READ, Permission.EVALUATION_WRITE)
+        ),
+    ],
 )
 
 

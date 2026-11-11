@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     web_search_api_key: str = ""
     web_search_base_url: str = "https://google.serper.dev"
 
+    # 可选 Webhook 订阅 JSON 数组。为空时不发送事件，入库和发布不受影响。
+    webhook_configs_json: str = ""
     rate_limit_per_minute: int = 60
     answer_timeout_seconds: int = 15
     max_evidence: int = 8

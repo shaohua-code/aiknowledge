@@ -28,8 +28,12 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-# 示例样本定义
-# 注意：这些是占位数据，标注 [示例] 以明确区分
+# 示例样本定义。
+# 这 30 条只用于开发和测试，不是真实脱敏评测集。
+# 每条问题以 [示例] 开头，labels 含「示例数据」，data_origin 固定为 example。
+EXAMPLE_LABEL = "示例数据"
+EXAMPLE_PREFIX = "[示例]"
+SAMPLE_ORIGIN = "example"
 SAMPLE_CASES: list[dict[str, Any]] = [
     # === 正常命中场景 (10 个) ===
     {
@@ -365,6 +369,33 @@ class SeedResult:
     evaluation_set_name: str
     total_cases: int
     case_codes: list[str]
+
+
+def assert_samples_are_examples(cases: list[dict[str, Any]] | None = None) -> None:
+    """确认全部样本都被标明为示例数据。
+
+    正式评测不得直接使用这批占位问题。数量、前缀、标签和来源任一不符都拒绝继续。
+    """
+    rows = SAMPLE_CASES if cases is None else cases
+    if len(rows) != 30:
+        raise RuntimeError(f"示例样本数量应为 30，当前为 {len(rows)}")
+    for case in rows:
+        question = str(case.get("question", ""))
+        labels = case.get("labels") or []
+        if not question.startswith(EXAMPLE_PREFIX):
+            raise RuntimeError(f"{case.get('case_code')} 未以 {EXAMPLE_PREFIX} 标明示例")
+        if EXAMPLE_LABEL not in labels:
+            raise RuntimeError(f"{case.get('case_code')} 缺少「{EXAMPLE_LABEL}」标签")
+        if case.get("data_origin") != SAMPLE_ORIGIN or case.get("is_example") is not True:
+            raise RuntimeError(f"{case.get('case_code')} 未标记 data_origin=example")
+
+
+for _sample in SAMPLE_CASES:
+    # 统一打上示例来源，避免后续只看 labels 时被当成业务样本。
+    _sample["data_origin"] = SAMPLE_ORIGIN
+    _sample["is_example"] = True
+
+assert_samples_are_examples()
 
 
 def preview_samples() -> None:

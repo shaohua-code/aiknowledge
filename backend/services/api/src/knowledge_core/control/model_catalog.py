@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends
 from pydantic import Field, HttpUrl
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.infrastructure.database import get_session
 from knowledge_core.infrastructure.model_catalog import (
     ModelCatalogEntry,
@@ -40,7 +41,10 @@ CAPABILITY_PROVIDERS: dict[str, set[str]] = {
 router = APIRouter(
     prefix="/control/v1",
     tags=["模型目录与应用绑定"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_control_permission(Permission.MODEL_READ, Permission.MODEL_WRITE)),
+    ],
 )
 
 

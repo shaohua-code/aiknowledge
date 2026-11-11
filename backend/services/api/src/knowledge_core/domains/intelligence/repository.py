@@ -31,6 +31,8 @@ class PublishedRetrievalProfile:
     vector_weight: float
     lexical_weight: float
     metadata_filters: dict[str, str | int | float | bool]
+    # 发布快照中的可选 RAG 开关。旧修订没有该键时为 None，检索保持原行为。
+    rag_config: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,9 @@ class IntelligenceRepository:
     ) -> PublishedRetrievalProfile:
         """从已验证的 JSON 快照构造运行面配置，不回退读取可变主策略参数。"""
         configuration = revision.configuration
+        raw_rag = configuration.get("ragEnhancement", configuration.get("rag_enhancement"))
+        # 只接受对象配置；缺省或类型不对时关闭增强，避免脏数据改变检索。
+        rag_config = raw_rag if isinstance(raw_rag, dict) else None
         return PublishedRetrievalProfile(
             id=profile.id,
             revision_id=revision.id,
@@ -123,6 +128,7 @@ class IntelligenceRepository:
             vector_weight=float(configuration["vector_weight"]),
             lexical_weight=float(configuration["lexical_weight"]),
             metadata_filters=dict(configuration["metadata_filters"]),
+            rag_config=rag_config,
         )
 
     @staticmethod
