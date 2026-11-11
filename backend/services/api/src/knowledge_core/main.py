@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from knowledge_core import __version__
 from knowledge_core.config import settings
 from knowledge_core.control.auth import router as session_router
+from knowledge_core.control.maintenance import router as maintenance_router
 from knowledge_core.control.model_catalog import router as model_catalog_router
 from knowledge_core.control.model_configuration import router as model_configuration_router
 from knowledge_core.domains.applications.router import router as applications_router
@@ -228,6 +229,7 @@ async def ready() -> JSONResponse:
 
 
 app.include_router(session_router)
+app.include_router(maintenance_router)
 app.include_router(model_configuration_router)
 app.include_router(model_catalog_router)
 app.include_router(applications_router)

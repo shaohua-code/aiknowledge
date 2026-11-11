@@ -13,6 +13,8 @@ from knowledge_core.control.auth import require_admin
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.evaluations.repository import EvaluationRepository
 from knowledge_core.domains.evaluations.schemas import (
+    BulkCaseImportRequest,
+    BulkCaseImportResponse,
     EvaluationCaseCreate,
     EvaluationCaseResultView,
     EvaluationCaseRevisionView,
@@ -215,6 +217,69 @@ async def list_evaluation_case_results(
     return success(
         [EvaluationCaseResultView.model_validate(row).model_dump(by_alias=True) for row in rows]
     )
+
+
+@router.post(
+    "/sets/{set_id}/cases/bulk",
+    status_code=201,
+    response_model=ApiSuccess[BulkCaseImportResponse],
+)
+async def bulk_import_cases(
+    application_id: UUID,
+    environment_id: UUID,
+    set_id: UUID,
+    payload: BulkCaseImportRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """批量导入评测样本，支持从 JSON 数组快速创建示例数据。
+
+    适用于：
+    - 导入示例评测集
+    - 从旧系统迁移样本
+    - 批量添加测试用例
+
+    默认跳过已存在的样本编码，避免重复创建冲突。
+    """
+    await _ensure_environment(session, application_id, environment_id)
+    if not await EvaluationRepository(session).get_set(application_id, environment_id, set_id):
+        raise NotFoundError("评测集不存在")
+
+    imported_codes: list[str] = []
+    skipped_count = 0
+
+    for case_data in payload.cases:
+        existing = await session.scalar(
+            select(EvaluationCaseRevision).where(
+                EvaluationCaseRevision.application_id == application_id,
+                EvaluationCaseRevision.environment_id == environment_id,
+                EvaluationCaseRevision.evaluation_set_id == set_id,
+                EvaluationCaseRevision.case_code == case_data.case_code,
+            )
+        )
+        if existing:
+            if payload.skip_existing:
+                skipped_count += 1
+                continue
+            raise ConflictError(f"样本编码已存在: {case_data.case_code}")
+
+        values = case_data.model_dump()
+        values["expected_document_ids"] = [str(item) for item in case_data.expected_document_ids]
+        row = EvaluationCaseRevision(
+            application_id=application_id,
+            environment_id=environment_id,
+            evaluation_set_id=set_id,
+            revision=1,
+            **values,
+        )
+        session.add(row)
+        imported_codes.append(case_data.case_code)
+
+    await session.commit()
+    return success({
+        "imported": len(imported_codes),
+        "skipped": skipped_count,
+        "caseCodes": imported_codes,
+    })
 
 
 @router.post("/sets/{set_id}/runs", status_code=201, response_model=ApiSuccess[EvaluationRunView])
