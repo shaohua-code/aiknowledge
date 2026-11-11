@@ -85,3 +85,21 @@ class EvaluationCaseResultView(ApiSchema):
     status: str
     checks: dict[str, Any]
     error_code: str | None
+
+
+class BulkCaseImportRequest(ApiSchema):
+    """批量导入评测样本请求，支持从 JSON 数组批量创建。"""
+
+    cases: list[EvaluationCaseCreate] = Field(min_length=1, max_length=100)
+    skip_existing: bool = Field(
+        default=True,
+        description="跳过已存在的样本编码；为 False 时遇到重复会返回冲突错误"
+    )
+
+
+class BulkCaseImportResponse(ApiSchema):
+    """批量导入评测样本响应。"""
+
+    imported: int
+    skipped: int
+    case_codes: list[str]
