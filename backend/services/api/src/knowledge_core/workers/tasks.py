@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from knowledge_core.config import settings
-from knowledge_core.domains.knowledge.ingestion import chunk_blocks, parse_content
+from knowledge_core.domains.knowledge.ingestion import (
+    chunk_blocks,
+    parse_content,
+    resolve_chunking_options,
+)
 from knowledge_core.domains.knowledge.repository import KnowledgeRepository
 from knowledge_core.infrastructure.http_safety import RemoteFetchRequest, fetch_public_source
 from knowledge_core.infrastructure.models import (
@@ -121,9 +125,7 @@ async def _cleanup_orphan_objects() -> dict:
         async with session_factory() as session:
             # 幂等结果只需保留 24 小时；先清理元数据，避免维护表无限增长。
             expired_records = await session.execute(
-                delete(IdempotencyRecord).where(
-                    IdempotencyRecord.expires_at < datetime.now(UTC)
-                )
+                delete(IdempotencyRecord).where(IdempotencyRecord.expires_at < datetime.now(UTC))
             )
             await session.commit()
             document_keys = set(
@@ -133,7 +135,9 @@ async def _cleanup_orphan_objects() -> dict:
             )
             revision_keys = set(
                 await session.scalars(
-                    select(DocumentRevision.storage_key).where(DocumentRevision.storage_key.is_not(None))
+                    select(DocumentRevision.storage_key).where(
+                        DocumentRevision.storage_key.is_not(None)
+                    )
                 )
             )
         before = datetime.now(UTC) - timedelta(hours=settings.orphan_object_retention_hours)
@@ -209,9 +213,7 @@ async def _run_ingestion(
                 raise ValueError("远程数据源不存在、已被删除或类型不支持")
             allowed_fields = {item.name for item in fields(RemoteFetchRequest)}
             configuration = {
-                key: value
-                for key, value in source.configuration.items()
-                if key in allowed_fields
+                key: value for key, value in source.configuration.items() if key in allowed_fields
             }
             result = await fetch_public_source(RemoteFetchRequest(**configuration))
             revision.storage_key = storage.write(
@@ -244,7 +246,16 @@ async def _run_ingestion(
         run.progress = 40
         await session.commit()
 
-        chunks = chunk_blocks(blocks)
+        # 版本 metadata 可打开段落或句子分块；缺省仍是固定字符数，兼容已有文档。
+        chunk_strategy, chunk_target, chunk_overlap = resolve_chunking_options(
+            revision.metadata_ or {}
+        )
+        chunks = chunk_blocks(
+            blocks,
+            target_chars=chunk_target,
+            overlap_chars=chunk_overlap,
+            chunking_strategy=chunk_strategy,
+        )
         run.stage = "embedding"
         run.progress = 65
         await session.commit()
@@ -315,6 +326,13 @@ async def _run_ingestion(
         attempt.stage = "published"
         attempt.completed_at = datetime.now(UTC)
         await session.commit()
+        await _notify_ingestion_event(
+            application_id,
+            environment_id,
+            run_id,
+            document_id=document.id,
+            version=revision.version,
+        )
         return {"runId": str(run.id), "status": "succeeded", "chunkCount": len(chunks)}
     except Exception as exc:
         await session.rollback()
@@ -342,8 +360,50 @@ async def _run_ingestion(
             attempt.error_message = error_message[:2000]
             attempt.completed_at = datetime.now(UTC)
         await session.commit()
+        await _notify_ingestion_event(
+            application_id,
+            environment_id,
+            run_id,
+            error_code=error_code,
+            error_message=error_message,
+        )
         logger.exception("入库任务失败 run_id=%s", run_id)
         raise
+
+
+async def _notify_ingestion_event(
+    application_id: UUID,
+    environment_id: UUID,
+    run_id: UUID,
+    *,
+    document_id: UUID | None = None,
+    version: int | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """入库终态通知订阅方。没有配置或投递失败时不改变任务结果。"""
+    try:
+        from knowledge_core.infrastructure.webhooks import (
+            create_ingestion_completed_event,
+            create_ingestion_failed_event,
+            notify_configured_webhooks,
+        )
+
+        if error_code is None and document_id is not None and version is not None:
+            event = create_ingestion_completed_event(
+                application_id, environment_id, run_id, document_id, version
+            )
+        else:
+            event = create_ingestion_failed_event(
+                application_id,
+                environment_id,
+                run_id,
+                error_code or "INGESTION_FAILED",
+                error_message or "入库失败",
+            )
+        await notify_configured_webhooks(event)
+    except Exception:
+        logger.warning("入库 Webhook 投递失败，任务状态已保留", exc_info=True)
 
 
 def _embedding_batch_digest(batch: list[dict[str, Any]]) -> str:

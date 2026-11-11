@@ -24,14 +24,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any, AsyncIterator
+from enum import StrEnum
+from typing import Any
 
 
-class StreamEventType(str, Enum):
+class StreamEventType(StrEnum):
     """流式事件类型枚举。"""
+
     CHUNK = "chunk"
     PROGRESS = "progress"
     CITATION = "citation"
@@ -42,6 +44,7 @@ class StreamEventType(str, Enum):
 @dataclass(slots=True)
 class StreamEvent:
     """流式事件。"""
+
     type: StreamEventType
     data: dict[str, Any]
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -293,12 +296,14 @@ class StreamingAnswerBuilder:
         events: list[StreamEvent] = []
 
         if self.config.emit_progress:
-            events.append(create_progress_event(
-                self.request_id,
-                "retrieval",
-                self.state.retrieval_ms() or 0,
-                {"hitCount": len(citations)},
-            ))
+            events.append(
+                create_progress_event(
+                    self.request_id,
+                    "retrieval",
+                    self.state.retrieval_ms() or 0,
+                    {"hitCount": len(citations)},
+                )
+            )
 
         if self.config.emit_citations and citations:
             events.append(create_citation_event(self.request_id, citations))
@@ -310,11 +315,13 @@ class StreamingAnswerBuilder:
         self.state.model_started_at = datetime.now(UTC)
 
         if self.config.emit_progress:
-            return [create_progress_event(
-                self.request_id,
-                "model",
-                self.state.elapsed_ms(),
-            )]
+            return [
+                create_progress_event(
+                    self.request_id,
+                    "model",
+                    self.state.elapsed_ms(),
+                )
+            ]
         return []
 
     def on_text_chunk(self, delta: str) -> list[StreamEvent]:
@@ -352,11 +359,13 @@ class StreamingAnswerBuilder:
 
         # 发送剩余缓冲
         if self._buffer:
-            events.append(create_chunk_event(
-                self.request_id,
-                self._buffer,
-                self.state.chunk_index,
-            ))
+            events.append(
+                create_chunk_event(
+                    self.request_id,
+                    self._buffer,
+                    self.state.chunk_index,
+                )
+            )
             self.state.chunks.append(self._buffer)
             self._buffer = ""
 
@@ -369,15 +378,17 @@ class StreamingAnswerBuilder:
 
         self.state.structured_output = structured_output
 
-        events.append(create_done_event(
-            self.request_id,
-            answer_mode,
-            structured_output,
-            confidence,
-            total_ms,
-            retrieval_ms,
-            model_ms,
-        ))
+        events.append(
+            create_done_event(
+                self.request_id,
+                answer_mode,
+                structured_output,
+                confidence,
+                total_ms,
+                retrieval_ms,
+                model_ms,
+            )
+        )
 
         return events
 

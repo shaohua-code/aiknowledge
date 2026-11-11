@@ -134,6 +134,11 @@ class RetrievalProfileRevisionDraft(ApiSchema):
     vector_weight: float = Field(default=0.65, ge=0, le=1)
     lexical_weight: float = Field(default=0.35, ge=0, le=1)
     metadata_filters: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    # 可选开关。不传时不写入发布快照，查询改写和重排序保持关闭。
+    rag_enhancement: dict[str, Any] | None = Field(
+        default=None,
+        description="可选 RAG 增强配置。默认不启用查询改写和重排序。",
+    )
 
     @model_validator(mode="after")
     def validate_weights(self):

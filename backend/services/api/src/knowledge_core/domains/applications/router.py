@@ -6,7 +6,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import (
+    require_admin,
+    require_control_permission,
+    require_permission,
+)
+from knowledge_core.control.permissions import Permission
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.applications.schemas import (
     ApiKeyCreate,
@@ -28,7 +33,16 @@ from knowledge_core.shared.schema import ApiSuccess
 router = APIRouter(
     prefix="/control/v1/applications",
     tags=["应用与环境"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(
+            require_control_permission(
+                Permission.APPLICATION_READ,
+                Permission.APPLICATION_WRITE,
+                delete_permission=Permission.API_KEY_REVOKE,
+            )
+        ),
+    ],
 )
 
 
@@ -118,6 +132,7 @@ async def list_api_keys(
     application_id: UUID,
     environment_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.API_KEY_READ))],
 ) -> dict:
     repository = ApplicationRepository(session)
     if not await repository.get_environment(application_id, environment_id):
@@ -136,15 +151,16 @@ async def create_api_key(
     environment_id: UUID,
     payload: ApiKeyCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.API_KEY_WRITE))],
 ) -> dict:
     key, raw = await ApplicationService(session).create_api_key(
         application_id, environment_id, payload
     )
     # 先按不含 secret 的视图模型序列化 ORM 行，再补一次性明文 secret 组装完整响应
     # （直接 model_validate(ORM) 会因 ORM 无 secret 属性而抛 ValidationError）
-    data = ApiKeyCreated(
-        **ApiKeyView.model_validate(key).model_dump(), secret=raw
-    ).model_dump(by_alias=True)
+    data = ApiKeyCreated(**ApiKeyView.model_validate(key).model_dump(), secret=raw).model_dump(
+        by_alias=True
+    )
     return success(data)
 
 
@@ -157,6 +173,7 @@ async def revoke_api_key(
     environment_id: UUID,
     key_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.API_KEY_REVOKE))],
 ) -> dict:
     repository = ApplicationRepository(session)
     key = await repository.revoke_api_key(application_id, environment_id, key_id)

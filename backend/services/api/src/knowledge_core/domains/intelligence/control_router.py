@@ -1,5 +1,12 @@
+"""AI 能力控制面。
+
+检索草稿可携带可选 ragEnhancement。未传时不写入快照，运行面保持原检索。
+策略发布和回滚成功后投递 Webhook；没有订阅或投递失败不影响发布结果。
+"""
+
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -7,7 +14,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import (
+    require_admin,
+    require_control_permission,
+    require_permission,
+)
+from knowledge_core.control.permissions import Permission
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.evaluations.repository import EvaluationRepository
 from knowledge_core.domains.intelligence.repository import IntelligenceRepository
@@ -34,10 +46,15 @@ from knowledge_core.shared.errors import ConflictError, NotFoundError
 from knowledge_core.shared.response import success
 from knowledge_core.shared.schema import ApiSuccess
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/control/v1/applications/{application_id}/environments/{environment_id}",
     tags=["AI 能力"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[
+        Depends(require_admin),
+        Depends(require_control_permission(Permission.PROFILE_READ, Permission.PROFILE_WRITE)),
+    ],
 )
 
 
@@ -46,6 +63,58 @@ async def _ensure_environment(
 ) -> None:
     if not await ApplicationRepository(session).get_environment(application_id, environment_id):
         raise NotFoundError()
+
+
+def _retrieval_draft_configuration(profile, payload: RetrievalProfileRevisionDraft) -> dict:
+    """组装检索草稿快照。
+
+    ragEnhancement 缺省时不写入，旧快照的必填字段和运行面行为保持不变。
+    """
+    configuration = payload.model_dump()
+    rag = configuration.pop("rag_enhancement", None)
+    configuration["code"] = profile.code
+    configuration["name"] = profile.name
+    configuration["collection_ids"] = [str(item) for item in payload.collection_ids]
+    if isinstance(rag, dict):
+        configuration["ragEnhancement"] = rag
+    return configuration
+
+
+async def _notify_profile_release(
+    *,
+    action: str,
+    application_id: UUID,
+    environment_id: UUID,
+    profile_kind: str,
+    profile_id: UUID,
+    revision_id: UUID,
+    revision: int,
+) -> None:
+    """发布或回滚成功后通知订阅方。投递失败只记日志。"""
+    try:
+        from knowledge_core.infrastructure.webhooks import (
+            create_profile_published_event,
+            create_profile_rolled_back_event,
+            notify_configured_webhooks,
+        )
+
+        factory = (
+            create_profile_published_event
+            if action == "published"
+            else create_profile_rolled_back_event
+        )
+        await notify_configured_webhooks(
+            factory(
+                application_id,
+                environment_id,
+                profile_kind,
+                profile_id,
+                revision_id,
+                revision,
+            )
+        )
+    except Exception:
+        logger.warning("策略 %s Webhook 投递失败，发布结果已保留", action, exc_info=True)
 
 
 @router.get("/retrieval-profiles", response_model=ApiSuccess[list[RetrievalProfileView]])
@@ -282,10 +351,7 @@ async def create_retrieval_profile_draft(
     for collection_id in payload.collection_ids:
         if not await knowledge.get_collection(application_id, environment_id, collection_id):
             raise NotFoundError("检索策略草稿引用了不存在的知识集合")
-    configuration = payload.model_dump()
-    configuration["code"] = profile.code
-    configuration["name"] = profile.name
-    configuration["collection_ids"] = [str(item) for item in payload.collection_ids]
+    configuration = _retrieval_draft_configuration(profile, payload)
     row = await repository.create_retrieval_draft(profile, configuration)
     await session.commit()
     await session.refresh(row)
@@ -348,10 +414,7 @@ async def update_retrieval_profile_draft(
     for collection_id in payload.collection_ids:
         if not await knowledge.get_collection(application_id, environment_id, collection_id):
             raise NotFoundError("检索策略草稿引用了不存在的知识集合")
-    configuration = payload.model_dump()
-    configuration["code"] = profile.code
-    configuration["name"] = profile.name
-    configuration["collection_ids"] = [str(item) for item in payload.collection_ids]
+    configuration = _retrieval_draft_configuration(profile, payload)
     try:
         await repository.update_retrieval_draft(revision, configuration)
     except ValueError as exc:
@@ -408,6 +471,7 @@ async def publish_retrieval_profile_revision(
     profile_id: UUID,
     revision_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.PROFILE_PUBLISH))],
 ) -> dict:
     """发布草稿并追加事件；运行时随后可按最近发布事件解析此修订。"""
     await _ensure_environment(session, application_id, environment_id)
@@ -429,6 +493,15 @@ async def publish_retrieval_profile_revision(
     )
     await session.commit()
     await session.refresh(release)
+    await _notify_profile_release(
+        action="published",
+        application_id=application_id,
+        environment_id=environment_id,
+        profile_kind="retrieval",
+        profile_id=profile_id,
+        revision_id=revision.id,
+        revision=revision.revision,
+    )
     return success(ProfileReleaseView.model_validate(release).model_dump(by_alias=True))
 
 
@@ -442,6 +515,7 @@ async def publish_answer_profile_revision(
     profile_id: UUID,
     revision_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.PROFILE_PUBLISH))],
 ) -> dict:
     """发布回答草稿；其已钉住的检索修订不在发布过程中被替换。"""
     await _ensure_environment(session, application_id, environment_id)
@@ -472,6 +546,15 @@ async def publish_answer_profile_revision(
     )
     await session.commit()
     await session.refresh(release)
+    await _notify_profile_release(
+        action="published",
+        application_id=application_id,
+        environment_id=environment_id,
+        profile_kind="answer",
+        profile_id=profile_id,
+        revision_id=revision.id,
+        revision=revision.revision,
+    )
     return success(ProfileReleaseView.model_validate(release).model_dump(by_alias=True))
 
 
@@ -485,6 +568,7 @@ async def rollback_retrieval_profile_revision(
     profile_id: UUID,
     revision_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.PROFILE_ROLLBACK))],
 ) -> dict:
     """回滚只追加指向历史已发布修订的事件，不改写任何旧配置。"""
     await _ensure_environment(session, application_id, environment_id)
@@ -502,6 +586,15 @@ async def rollback_retrieval_profile_revision(
     )
     await session.commit()
     await session.refresh(release)
+    await _notify_profile_release(
+        action="rolled_back",
+        application_id=application_id,
+        environment_id=environment_id,
+        profile_kind="retrieval",
+        profile_id=profile_id,
+        revision_id=revision.id,
+        revision=revision.revision,
+    )
     return success(ProfileReleaseView.model_validate(release).model_dump(by_alias=True))
 
 
@@ -515,6 +608,7 @@ async def rollback_answer_profile_revision(
     profile_id: UUID,
     revision_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _: Annotated[object, Depends(require_permission(Permission.PROFILE_ROLLBACK))],
 ) -> dict:
     """回答回滚遵循同一事件追加规则，旧回答快照永远保持可审计。"""
     await _ensure_environment(session, application_id, environment_id)
@@ -532,4 +626,13 @@ async def rollback_answer_profile_revision(
     )
     await session.commit()
     await session.refresh(release)
+    await _notify_profile_release(
+        action="rolled_back",
+        application_id=application_id,
+        environment_id=environment_id,
+        profile_kind="answer",
+        profile_id=profile_id,
+        revision_id=revision.id,
+        revision=revision.revision,
+    )
     return success(ProfileReleaseView.model_validate(release).model_dump(by_alias=True))

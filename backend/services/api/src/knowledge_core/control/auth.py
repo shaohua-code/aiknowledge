@@ -1,14 +1,34 @@
+"""控制面会话认证模块。
+
+提供管理员会话认证和权限检查功能：
+- 基于签名 Cookie 的会话管理
+- 管理员登录/登出
+- 权限框架集成（RBAC）
+
+安全特性：
+- HttpOnly Cookie 防止 XSS
+- 签名防止 Cookie 篡改
+- 可配置的会话过期时间
+"""
+
 from __future__ import annotations
 
 import secrets
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Cookie, Depends, Response
+from fastapi import APIRouter, Cookie, Depends, Request, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import Field
 
 from knowledge_core.config import settings
-from knowledge_core.shared.errors import AuthenticationError
+from knowledge_core.control.permissions import (
+    Permission,
+    Role,
+    UserIdentity,
+    has_permission,
+)
+from knowledge_core.shared.errors import AuthenticationError, ForbiddenError
 from knowledge_core.shared.response import success
 from knowledge_core.shared.schema import ApiSchema, ApiSuccess
 
@@ -47,9 +67,123 @@ def _verify_session(token: str) -> str:
 async def require_admin(
     session_token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
 ) -> str:
+    """要求管理员会话的依赖函数。
+
+    用于控制面路由的基础认证，验证会话 Cookie 有效性。
+
+    Args:
+        session_token: 会话 Cookie 值
+
+    Returns:
+        管理员邮箱
+
+    Raises:
+        AuthenticationError: 未登录或会话已失效
+    """
     if not session_token:
         raise AuthenticationError("请先登录管理控制台")
     return _verify_session(session_token)
+
+
+async def get_current_user(
+    session_token: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None,
+) -> UserIdentity:
+    """获取当前用户身份的依赖函数。
+
+    从会话 Cookie 中解析用户身份信息，包括角色和权限。
+    当前实现中，已认证的管理员具有平台管理员角色。
+
+    Args:
+        session_token: 会话 Cookie 值
+
+    Returns:
+        用户身份对象
+
+    Raises:
+        AuthenticationError: 未登录或会话已失效
+    """
+    if not session_token:
+        raise AuthenticationError("请先登录管理控制台")
+
+    email = _verify_session(session_token)
+
+    # 当前实现：已认证的管理员具有平台管理员角色
+    # 未来可从数据库加载用户角色
+    return UserIdentity(
+        user_id=UUID(int=0),  # 占位 ID，未来从数据库获取
+        email=email,
+        name=email.split("@")[0],
+        platform_roles=frozenset([Role.PLATFORM_ADMIN]),
+        application_roles={},
+    )
+
+
+def _application_id_from_request(request: Request) -> UUID | None:
+    """从路径参数读取应用 ID。没有该参数时按平台级权限检查。"""
+    raw = request.path_params.get("application_id")
+    if not raw:
+        return None
+    return UUID(str(raw))
+
+
+def permission_for_method(
+    method: str,
+    read_permission: Permission,
+    write_permission: Permission,
+    delete_permission: Permission | None = None,
+) -> Permission:
+    """按 HTTP 方法选择读、写或删除权限。"""
+    normalized = method.upper()
+    if normalized in {"GET", "HEAD", "OPTIONS"}:
+        return read_permission
+    if normalized == "DELETE":
+        return delete_permission or write_permission
+    return write_permission
+
+
+def require_permission(permission: Permission):
+    """创建检查单一权限的依赖。应用 ID 只来自路径，不新增查询参数。"""
+
+    async def _check_permission(
+        request: Request,
+        user: Annotated[UserIdentity, Depends(get_current_user)],
+    ) -> UserIdentity:
+        application_id = _application_id_from_request(request)
+        if not has_permission(user, permission, application_id):
+            raise ForbiddenError(f"需要 {permission.name} 权限")
+        return user
+
+    return _check_permission
+
+
+def require_control_permission(
+    read_permission: Permission,
+    write_permission: Permission,
+    *,
+    delete_permission: Permission | None = None,
+):
+    """按请求方法检查控制面权限。
+
+    已登录管理员当前映射为平台管理员，因此既有控制台调用仍然放行。
+    只读角色会被写操作拒绝。应用级角色只在路径中的应用内生效。
+    """
+
+    async def _check_permission(
+        request: Request,
+        user: Annotated[UserIdentity, Depends(get_current_user)],
+    ) -> UserIdentity:
+        needed = permission_for_method(
+            request.method,
+            read_permission,
+            write_permission,
+            delete_permission,
+        )
+        application_id = _application_id_from_request(request)
+        if not has_permission(user, needed, application_id):
+            raise ForbiddenError(f"需要 {needed.name} 权限")
+        return user
+
+    return _check_permission
 
 
 @router.post("/login", response_model=ApiSuccess[AdminSessionResponse])

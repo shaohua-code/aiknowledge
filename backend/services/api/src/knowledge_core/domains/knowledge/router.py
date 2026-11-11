@@ -7,7 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from knowledge_core.control.auth import require_admin
+from knowledge_core.control.auth import require_admin, require_control_permission
+from knowledge_core.control.permissions import Permission
 from knowledge_core.domains.applications.repository import ApplicationRepository
 from knowledge_core.domains.knowledge.repository import KnowledgeRepository
 from knowledge_core.domains.knowledge.schemas import (
@@ -38,7 +39,17 @@ from knowledge_core.shared.schema import ApiSuccess
 router = APIRouter(
     prefix="/control/v1/applications/{application_id}/environments/{environment_id}",
     tags=["知识中心"],
-    dependencies=[Depends(require_admin)],
+    # 删除端点当前是归档，因此使用归档权限，而不是物理删除权限。
+    dependencies=[
+        Depends(require_admin),
+        Depends(
+            require_control_permission(
+                Permission.KNOWLEDGE_READ,
+                Permission.KNOWLEDGE_WRITE,
+                delete_permission=Permission.KNOWLEDGE_ARCHIVE,
+            )
+        ),
+    ],
 )
 
 

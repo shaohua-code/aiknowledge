@@ -5,15 +5,13 @@
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
-
-import pytest
+from uuid import uuid4
 
 from knowledge_core.control.permissions import (
+    ROLE_PERMISSIONS,
     Permission,
     PermissionError,
     Role,
-    ROLE_PERMISSIONS,
     UserIdentity,
     get_permission_description,
     get_role_description,
@@ -177,16 +175,22 @@ class TestHasPermission:
         )
 
         # 有其中一个权限
-        assert has_any_permission(user, [
-            Permission.KNOWLEDGE_READ,  # 有
-            Permission.KNOWLEDGE_WRITE,  # 无
-        ])
+        assert has_any_permission(
+            user,
+            [
+                Permission.KNOWLEDGE_READ,  # 有
+                Permission.KNOWLEDGE_WRITE,  # 无
+            ],
+        )
 
         # 都没有
-        assert not has_any_permission(user, [
-            Permission.KNOWLEDGE_WRITE,
-            Permission.PROFILE_PUBLISH,
-        ])
+        assert not has_any_permission(
+            user,
+            [
+                Permission.KNOWLEDGE_WRITE,
+                Permission.PROFILE_PUBLISH,
+            ],
+        )
 
     def test_has_all_permissions(self) -> None:
         """has_all_permissions 应正确工作。"""
@@ -198,16 +202,22 @@ class TestHasPermission:
         )
 
         # 都有
-        assert has_all_permissions(user, [
-            Permission.KNOWLEDGE_READ,
-            Permission.PROFILE_READ,
-        ])
+        assert has_all_permissions(
+            user,
+            [
+                Permission.KNOWLEDGE_READ,
+                Permission.PROFILE_READ,
+            ],
+        )
 
         # 有一个没有
-        assert not has_all_permissions(user, [
-            Permission.KNOWLEDGE_READ,
-            Permission.KNOWLEDGE_WRITE,
-        ])
+        assert not has_all_permissions(
+            user,
+            [
+                Permission.KNOWLEDGE_READ,
+                Permission.KNOWLEDGE_WRITE,
+            ],
+        )
 
 
 class TestPermissionDescriptions:
@@ -219,7 +229,7 @@ class TestPermissionDescriptions:
             description = get_role_description(role)
             assert description, f"{role.name} 缺少描述"
             # 检查包含中文字符
-            assert any('\u4e00' <= c <= '\u9fff' for c in description)
+            assert any("\u4e00" <= c <= "\u9fff" for c in description)
 
     def test_permission_descriptions_are_chinese(self) -> None:
         """权限描述应为中文。"""
